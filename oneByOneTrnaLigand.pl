@@ -32,7 +32,7 @@ my $crossover_rate      = .7;
 my $crossover_cutoff    = .7;
 my $crossover_amount   = .5;
 my $max_seconds         = 3600;   #One hour
-my $target_stddev       = 51;     #Must have stddev <= this number to end early
+my $target_stddev       = 0;     #Must have stddev <= this number to end early
 my $effect_range        = 410.4;
 my $cross_validate      = 0;
 my @cps                 = ('AU','UA','GC','CG','GU','UG');
@@ -56,7 +56,7 @@ my $GetOptHash =
    'k|crossover-cutoff=s'  => \$crossover_cutoff,       #OPTIONAL [0.7]
    'a|crossover-amount=s'  => \$crossover_amount,       #OPTIONAL [0.5]
    's|max-seconds=s'       => \$max_seconds,            #OPTIONAL [3600] 1 hr
-   't|target-stddev=s'     => \$target_stddev,          #OPTIONAL [51]
+   't|target-stddev=s'     => \$target_stddev,          #OPTIONAL [0]
    'i|input-file=s'        => sub {push(@input_files,   #REQUIRED unless <> is
 					sglob($_[1]))}, #         supplied
    '<>'                    => sub {push(@input_files,   #REQUIRED unless -i is
@@ -381,8 +381,8 @@ foreach my $input_file (@input_files)
 	  {
 	    $cross_count++;
 
-	    verbose("Working on solution $cross_count of ",scalar(@known_kds),
-		    '.');
+	    verboseOverMe("Working on solution $cross_count of ",
+			  scalar(@known_kds),'.');
 
 	    debug("Calling getSolutionExhaustively with these known Kd ",
 		  "arrays: [",grep {$_ ne $motif_array} @known_kds,
@@ -391,17 +391,25 @@ foreach my $input_file (@input_files)
 
 	    my $solution = {};
 	    if($ga_flag)
-	      {$solution = getSolutionUsingGA([keys(%$cp1_hash)],
-					      [keys(%$ip_hash)],
-					      [keys(%$cp2_hash)],
-					      [grep {$_ ne $motif_array}
-					       @known_kds])}
+	      {$solution =
+		 getSolutionUsingGA([grep {$cp1_hash->{$motif_array->[0]} > 1}
+				     keys(%$cp1_hash)],
+				    [grep {$ip_hash->{$motif_array->[1]} > 1}
+				     keys(%$ip_hash)],
+				    [grep {$cp2_hash->{$motif_array->[2]} > 1}
+				     keys(%$cp2_hash)],
+				    [grep {$_ ne $motif_array}
+				     @known_kds])}
 	    else
-	      {$solution = getSolutionExhaustively([keys(%$cp1_hash)],
-						   [keys(%$ip_hash)],
-						   [keys(%$cp2_hash)],
-						   [grep {$_ ne $motif_array}
-						    @known_kds])}
+	      {$solution =
+		 getSolutionExhaustively([grep {$cp1_hash->{$motif_array->[0]}
+						  > 1} keys(%$cp1_hash)],
+					 [grep {$ip_hash->{$motif_array->[1]}
+						  > 1} keys(%$ip_hash)],
+					 [grep {$cp2_hash->{$motif_array->[2]}
+						  > 1} keys(%$cp2_hash)],
+					 [grep {$_ ne $motif_array}
+					  @known_kds])}
 #	    reportSolution($solution);
 
 	    my($ccp1,$cip,$ccp2,$target_kd);
@@ -441,15 +449,17 @@ foreach my $input_file (@input_files)
 
 	my $solution = {};
 	if($ga_flag)
-	  {$solution = getSolutionUsingGA([keys(%$cp1_hash)],
-					  [keys(%$ip_hash)],
-					  [keys(%$cp2_hash)],
-					  [@known_kds])}
+	  {$solution =
+	     getSolutionUsingGA([keys(%$cp1_hash)],
+				[keys(%$ip_hash)],
+				[keys(%$cp2_hash)],
+				[@known_kds])}
 	else
-	  {$solution = getSolutionExhaustively([keys(%$cp1_hash)],
-					       [keys(%$ip_hash)],
-					       [keys(%$cp2_hash)],
-					       [@known_kds])}
+	  {$solution =
+	     getSolutionExhaustively([keys(%$cp1_hash)],
+				     [keys(%$ip_hash)],
+				     [keys(%$cp2_hash)],
+				     [@known_kds])}
 	reportSolution($solution);
       }
 
@@ -510,8 +520,10 @@ sub reportSolution
     my $solution = $_[0];#{VALUES => [{AT...},{AA...},{{AT...}}],STDDEV => ...}
     #global: @cps
     #global: @ips
+    #global: $effect_range
 
-    print("Solution Standard Deviation: $solution->{STDDEV}\n",
+    print("Effect Range: $effect_range\n",
+	  "Solution Standard Deviation: $solution->{STDDEV}\n",
 	  "\tPosition 1:\n",
 	  join("\n",
 	       map {"\t\t$_\t" .
@@ -746,7 +758,8 @@ sub getSolutionUsingGA
     my $known_kds = $_[3]; #An array of arrays containing [cp1,ip,cp2,kd]
     #globals: $pop_size, $mutation_rate, $crossover_rate, $crossover_amount,
     #         $crossover_cutoff, $max_seconds, $target_stddev
-    my $target_fitness = exp(1000*(1/$target_stddev));
+    my $target_fitness = ($target_stddev == 0 ?
+			  0 : exp(1000*(1/$target_stddev)));
 
     if(scalar(@$known_kds) < 2)
       {
@@ -807,9 +820,10 @@ sub getSolutionUsingGA
        $mom,$dad,@new_solutions,$population,$total_fitness);
     my $generation_num = 0;
     while(($max_seconds == 0 || markTime(-1) < $max_seconds) &&
-	  (!defined($best_fitness) || $best_fitness < $target_fitness))
+	  (!defined($best_fitness) || $target_fitness == 0 ||
+	   $best_fitness < $target_fitness))
       {
-	verbose("Generation ",++$generation_num,".  Assessing fitness.");
+	verboseOverMe("Generation ",++$generation_num,".  Assessing fitness.");
 
 	$population = [@$next_generation];
 	$next_generation = [];
@@ -842,7 +856,7 @@ sub getSolutionUsingGA
 	debug("Total Fitness: [$total_fitness]  Average Fitness: [",
 	      $total_fitness / scalar(@fitnesses),"].");
 
-	verbose("Beginning Natural Selection & Mutations.");
+	verboseOverMe("Beginning Natural Selection & Mutations.");
 
 	#Until the next generation is equal to the population size
 	my @next_generation = ();
@@ -1303,7 +1317,7 @@ end_print
                                    script will run indefinitely until the
                                    --target-stddev is reached.  Only used when
                                    the -g flag is supplied.
-     -t|--target-stddev   OPTIONAL [51] If a solution is found with an average
+     -t|--target-stddev   OPTIONAL [0] If a solution is found with an average
                                    standard deviation at or below this
                                    threshold, the program will stop before the
                                    supplied --max-seconds.  Only used when the
