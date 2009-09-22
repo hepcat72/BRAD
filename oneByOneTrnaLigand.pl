@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.1';
+my $software_version_number = '1.2';
 my $created_on_date         = '8/11/2009';
 
 ##
@@ -20,6 +20,7 @@ use Getopt::Long;
 #Declare & initialize variables.  Provide default values here.
 my($outfile_suffix); #Not defined so a user can overwrite the input file
 my @input_files         = ();
+my @refine_files        = ();
 my $current_output_file = '';
 my $help                = 0;
 my $version             = 0;
@@ -33,7 +34,8 @@ my $crossover_cutoff    = .7;
 my $crossover_amount   = .5;
 my $max_seconds         = 3600;   #One hour
 my $target_stddev       = 0;     #Must have stddev <= this number to end early
-my $effect_range        = 410.4;
+my $default_effect_range = 410.4;
+my $effect_range        = $default_effect_range;
 my $cross_validate      = 0;
 my @cps                 = ('AU','UA','GC','CG','GU','UG');
 my @ips                 = ('AG','GA','AC','CA','AA','GG','CC','CU','UC','UU');
@@ -48,6 +50,8 @@ my $ignore_errors = 0;
 
 my $GetOptHash =
   {'r|effect-range=s'      => \$effect_range,           #OPTIONAL [410.4]
+   'f|refine-solution=s'   => sub {push(@refine_files,  #OPTIONAL [nothing]
+					sglob($_[1]))},
    'v|cross-validate!'     => \$cross_validate,         #OPTIONAL [Off]
    'g|genetic-algorithm!'  => \$ga_flag,                #OPTIONAL [Off]
    'p|population-size=s'   => \$pop_size,               #OPTIONAL [10000]
@@ -231,6 +235,30 @@ if($target_stddev < 0 || $target_stddev !~ /^(\d*\.?\d+|\d+\.\d*)$/)
     quit(-7);
   }
 
+if(scalar(@refine_files) != 0 && scalar(@refine_files) != scalar(@input_files))
+  {
+    error('The number of solution files (-f) to refine must be the same as ',
+	  'the number of input files (-i).');
+    usage(1);
+    quit(-8);
+  }
+
+if(scalar(@refine_files) && $cross_validate)
+  {
+    error("Incompatible options selected.  You cannot refine solutions (-f) ",
+	  "in cross-validate (-c) mode.");
+    usage(1);
+    quit(-9);
+  }
+
+if(scalar(@refine_files) && $effect_range != $default_effect_range)
+  {
+    error("Incompatible options selected.  You cannot refine solutions (-f) ",
+	  "with an effect range (-r) because the solution contains an effect ",
+	  "range.");
+    usage(1);
+    quit(-10);
+  }
 
 verbose('Run conditions: ',getCommand(1));
 
@@ -251,6 +279,9 @@ if(!isStandardOutputToTerminal() && !$noheader)
 #For each input file
 foreach my $input_file (@input_files)
   {
+    my($refine_file);
+    $refine_file = shift(@refine_files) if(scalar(@refine_files));
+
     #If an output file name suffix has been defined
     if(defined($outfile_suffix))
       {
@@ -381,13 +412,22 @@ foreach my $input_file (@input_files)
 	  {
 	    $cross_count++;
 
-	    verboseOverMe("Working on solution $cross_count of ",
-			  scalar(@known_kds),'.');
+	    verbose("Working on solution $cross_count of ",
+		    scalar(@known_kds),'.');
 
 	    debug("Calling getSolutionExhaustively with these known Kd ",
 		  "arrays: [",grep {$_ ne $motif_array} @known_kds,
 		  "].  There are ",scalar(@known_kds),
 		  " known Kd arrays total.");
+
+	    if($cp1_hash->{$motif_array->[0]} == 1 ||
+	       $ip_hash->{$motif_array->[1]}  == 1 ||
+	       $cp2_hash->{$motif_array->[2]} == 1)
+	      {
+		warning("Cannot generate a factor for loop: [@$motif_array] ",
+			"because there is not enough data.  One or more of ",
+			"the base pairs only exists in this loop.");
+	      }
 
 	    my $solution = {};
 	    if($ga_flag)
@@ -447,19 +487,73 @@ foreach my $input_file (@input_files)
 	  {error("Not enough data to cross-validate!  ",
 		 "Computing one solution.")}
 
+	#Prepare to refine the supplied solution
+	my($refine_solution,$refinement_factor,$refine_solution_unaltered);
+	if(defined($refine_file) && $refine_file ne '')
+	  {
+	    $refine_solution = getFactorHash($refine_file);
+	    $refine_solution_unaltered = copySolution($refine_solution);
+
+	    #Figure out what decimal place we're adding to the refined solution
+	    #and prepare it so that values are centered around the current ones
+	    if(defined($refine_solution))
+	      {
+		$effect_range = $refine_solution->{EFFECT};
+
+		my $max_places = 0;
+		foreach my $valhash (@{$refine_solution->{VALUES}})
+		  {
+		    my $places =
+		      (sort {$b <=> $a}
+		       map {my $p=$_;$p=~s/\d*\.//;length($p)}
+		       values(%$valhash))[0];
+		    $max_places = $places if($places > $max_places);
+		  }
+
+		$refinement_factor = '0.' . '0' x $max_places . '1';
+
+		#We want the factor to be between 0 and 1 (inclusive).  Since we
+		#know we're going to be adding at most 10 * refinement_factor
+		#and that we're going to be subtracting 5 * refinement_factor,
+		#we need to make sure nothing will end up less than 0 or greater
+		#than 1
+		my $subt = $refinement_factor * 5;
+		my $max = 1 - ($refinement_factor * 10);
+
+		foreach my $valhash (@{$refine_solution->{VALUES}})
+		  {
+		    foreach my $key (keys(%$valhash))
+		      {
+			unless($valhash->{$key} eq '')
+			  {
+			    $valhash->{$key} -= $subt;
+			    $valhash->{$key} = 0 if($valhash->{$key} < 0);
+			    $valhash->{$key} = $max if($valhash->{$key} > $max);
+			  }
+		      }
+		  }
+	      }
+	  }
+
 	my $solution = {};
 	if($ga_flag)
 	  {$solution =
 	     getSolutionUsingGA([keys(%$cp1_hash)],
 				[keys(%$ip_hash)],
 				[keys(%$cp2_hash)],
-				[@known_kds])}
+				[@known_kds],
+			        $refine_solution,
+			        $refinement_factor,
+			        $refine_solution_unaltered)}
 	else
 	  {$solution =
 	     getSolutionExhaustively([keys(%$cp1_hash)],
 				     [keys(%$ip_hash)],
 				     [keys(%$cp2_hash)],
-				     [@known_kds])}
+				     [@known_kds],
+				     $refine_solution,
+				     $refinement_factor,
+				     $refine_solution_unaltered)}
 	reportSolution($solution);
       }
 
@@ -515,6 +609,131 @@ if(!$quiet && ($verbose                     ||
 
 
 
+sub getFactorHash
+  {
+    my $input_file = $_[0];
+
+    #Open the input file
+    if(!open(INPUT,$input_file))
+      {
+	#Report an error and iterate if there was an error
+	error("Unable to open input file: [$input_file].\n$!");
+	next;
+      }
+    else
+      {verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	       'Opened input file.')}
+
+    my $line_num     = 0;
+    my $verbose_freq = 100;
+    my $solution = {};
+
+    #For each line in the current input file
+    while(getLine(*INPUT))
+      {
+	$line_num++;
+	verboseOverMe('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+		      "Reading line: [$line_num].") unless($line_num %
+							   $verbose_freq);
+
+	next if(/^\s*#/ || /^\s*$/);
+
+	if(/Solution Standard Deviation: (\S+)$/)
+	  {
+	    if(exists($solution->{STDDEV}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{STDDEV} = $1;
+	  }
+	elsif(/Effect Range: (\S+)/)
+	  {
+	    if(exists($solution->{EFFECT}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{EFFECT} = $1;
+	  }
+	elsif(/^\tPosition \d+:$/)
+	  {push(@{$solution->{VALUES}},{})}
+	elsif(/^\t\t(\S+)\t?(\S*)$/)
+	  {
+	    my $pair   = $1;
+	    my $factor = $2;
+	    $factor = '' unless(defined($factor));
+
+	    if(exists($solution->{VALUES}->[-1]->{$pair}))
+	      {
+		error("This base pair: [$pair] was found more than once in ",
+		      "position [",scalar(@{$solution->{VALUES}}),
+		      "] in file: [$input_file].  Keeping the first value ",
+		      "and skipping the extra.");
+		next;
+	      }
+
+	    $solution->{VALUES}->[-1]->{$pair} = $factor;
+	  }
+	else
+	  {
+	    chomp;
+	    error("Unable to parse line $line_num: [$_].");
+	  }
+      }
+
+    close(INPUT);
+
+    verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
+
+    if(scalar(keys(%$solution)) != 3)
+      {
+	error("Invalid or no solution parsed from file [$input_file].  ",
+	      "Skipping.");
+	return({});
+      }
+
+    if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+)$/)
+      {warning("invalid standard deviation found in file [$input_file]: ",
+	       "[$solution->{STDDEV}].")}
+
+    if(scalar(@{$solution->{VALUES}}) < 3)
+      {
+	error("Invalid solution in file [$input_file].  The loop must be at ",
+	      "least 1x1 with 2 closing base pair positions.  Only [",
+	      scalar(@{$solution->{VALUES}}),"] positions were parsed.  ",
+	      "Skipping.");
+	return({});
+      }
+    elsif(scalar(@{$solution->{VALUES}}) > 3)
+      {warning("This script was written to calculate STDDEV's of 1x1 ",
+	       "internal loops, but the solution in file [$input_file] ",
+	       "appears to be for a larger loop.  It may still work, but ",
+	       "this could be a mistake.")}
+
+    my @bad =
+      grep {my $h = $_;
+	    scalar(grep {$_ !~ /^([A-Z]{2}|)$/i ||
+			   $h->{$_} !~ /^(0?\.?\d*|1|)$/} keys(%$h))}
+	@{$solution->{VALUES}};
+    if(scalar(@bad))
+      {
+	warning("Invalid base pairs or factor valuess were in your file ",
+		"[$input_file]: [(",
+		join(')(',
+		     map {my $x=$_;
+			  join('=>',map {"$_=>$x->{$_}"} keys(%$x))} @bad),
+		")].");
+      }
+
+    return($solution);
+  }
+
 sub reportSolution
   {
     my $solution = $_[0];#{VALUES => [{AT...},{AA...},{{AT...}}],STDDEV => ...}
@@ -522,23 +741,30 @@ sub reportSolution
     #global: @ips
     #global: $effect_range
 
-    print("Effect Range: $effect_range\n",
-	  "Solution Standard Deviation: $solution->{STDDEV}\n",
-	  "\tPosition 1:\n",
-	  join("\n",
-	       map {"\t\t$_\t" .
-		      (exists($solution->{VALUES}->[0]->{$_}) ?
-		       $solution->{VALUES}->[0]->{$_} : '')} @cps),"\n",
-	  "\tPosition 2:\n",
-	  join("\n",
-	       map {"\t\t$_\t" .
-		      (exists($solution->{VALUES}->[1]->{$_}) ?
-		       $solution->{VALUES}->[1]->{$_} : '')} @ips),"\n",
-	  "\tPosition 3:\n",
-	  join("\n",
-	       map {"\t\t$_\t" .
-		      (exists($solution->{VALUES}->[2]->{$_}) ?
-		       $solution->{VALUES}->[2]->{$_} : '')} @cps),"\n");
+    #Note, we do not need to alter this sub to account for refined solutions
+    #because getSolutionExhaustively and getSolutionUsingGA return whole actual
+    #refined solutions
+
+    my $output =
+      join('',("Effect Range: $effect_range\n",
+	       "Solution Standard Deviation: $solution->{STDDEV}\n",
+	       "\tPosition 1:\n",
+	       join("\n",
+		    map {"\t\t$_\t" .
+			   (exists($solution->{VALUES}->[0]->{$_}) ?
+			    $solution->{VALUES}->[0]->{$_} : '')} @cps),"\n",
+	       "\tPosition 2:\n",
+	       join("\n",
+		    map {"\t\t$_\t" .
+			   (exists($solution->{VALUES}->[1]->{$_}) ?
+			    $solution->{VALUES}->[1]->{$_} : '')} @ips),"\n",
+	       "\tPosition 3:\n",
+	       join("\n",
+		    map {"\t\t$_\t" .
+			   (exists($solution->{VALUES}->[2]->{$_}) ?
+			    $solution->{VALUES}->[2]->{$_} : '')} @cps),"\n"));
+    print($output);
+    return($output);
   }
 
 sub calculateKd
@@ -549,51 +775,149 @@ sub calculateKd
     my $known_kd        = $_[3];
     #global: $effect_range
 
+    #Note, we do not need to alter this sub to account for refined solutions
+    #because getSolutionExhaustively and getSolutionUsingGA return whole actual
+    #refined solutions and that's what this sub should take as input.
+    #See internalCalculateKd to merge a refining solution and the refined
+    #internal solution factors
+
     my $kd = $known_kd;
     debug("Position 1: $calculate_motif->[0]_c vs. $known_motif->[0]_k");
-    $kd += $effect_range * ($solution->{VALUES}->[0]->{$calculate_motif->[0]} -
-			    $solution->{VALUES}->[0]->{$known_motif->[0]});
+    $kd += $effect_range *
+      ((exists($solution->{VALUES}->[0]->{$calculate_motif->[0]}) ?
+	$solution->{VALUES}->[0]->{$calculate_motif->[0]} : 0) -
+       (exists($solution->{VALUES}->[0]->{$known_motif->[0]}) ?
+	$solution->{VALUES}->[0]->{$known_motif->[0]} : 0));
+
     debug("Position 2: $calculate_motif->[1]_c vs. $known_motif->[1]_k");
-    $kd += $effect_range * ($solution->{VALUES}->[1]->{$calculate_motif->[1]} -
-			    $solution->{VALUES}->[1]->{$known_motif->[1]});
+    $kd += $effect_range *
+       ((exists($solution->{VALUES}->[1]->{$calculate_motif->[1]}) ?
+	 $solution->{VALUES}->[1]->{$calculate_motif->[1]} : 0) -
+	(exists($solution->{VALUES}->[1]->{$known_motif->[1]}) ?
+	 $solution->{VALUES}->[1]->{$known_motif->[1]} : 0));
+
     debug("Position 3: $calculate_motif->[2]_c vs. $known_motif->[2]_k");
-    $kd += $effect_range * ($solution->{VALUES}->[2]->{$calculate_motif->[2]} -
-			    $solution->{VALUES}->[2]->{$known_motif->[2]});
+    $kd += $effect_range *
+      ((exists($solution->{VALUES}->[2]->{$calculate_motif->[2]}) ?
+	$solution->{VALUES}->[2]->{$calculate_motif->[2]} : 0) -
+       (exists($solution->{VALUES}->[2]->{$known_motif->[2]}) ?
+	$solution->{VALUES}->[2]->{$known_motif->[2]} : 0));
 
     return($kd);
   }
 
 sub internalCalculateKd
   {
-    my $solution         = $_[0]; #{VALUES => [{AT...},{AA...},{{AT...}}]}
-    my $int_sol_pos_hash = $_[1];
-    my $calculate_motif  = $_[2];
-    my $known_motif      = $_[3];
+    my $solution          = $_[0]; #{VALUES => [{AT...},{AA...},{{AT...}}]}
+    my $int_sol_pos_hash  = $_[1];
+    my $calculate_motif   = $_[2];
+    my $known_motif       = $_[3];
+    my $refine_solution   = $_[4];
+    my $refinement_factor = $_[5];
     #global: $effect_range
 
     my $kd = $known_motif->[3];
-#    debug("Position 1: $calculate_motif->[0]_c vs. $known_motif->[0]_k");
-    $kd += $effect_range *
-      ($solution->[$int_sol_pos_hash->{1}->{$calculate_motif->[0]}] * .1 -
-       $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] * .1);
-#    debug("Position 2: $calculate_motif->[1]_c vs. $known_motif->[1]_k");
-    $kd += $effect_range *
-      ($solution->[$int_sol_pos_hash->{2}->{$calculate_motif->[1]}] * .1 -
-       $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] * .1);
-#    debug("Position 3: $calculate_motif->[2]_c vs. $known_motif->[2]_k");
-    $kd += $effect_range *
-      ($solution->[$int_sol_pos_hash->{3}->{$calculate_motif->[2]}] * .1 -
-       $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] * .1);
+    if(defined($refine_solution))
+      {
+	#Each factor in the existing refining solution must have a value added
+	#to it consisting of the refinement factor times the random value in the
+	#internal solution
+
+	my $c1 = (exists($refine_solution->{VALUES}->[0]
+			 ->{$calculate_motif->[0]}) ?
+		  $refine_solution->{VALUES}->[0]->{$calculate_motif->[0]} :
+		  0) +
+		    (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
+		     $solution->[$int_sol_pos_hash->{1}
+				 ->{$calculate_motif->[0]}] *
+		     $refinement_factor : 0);
+	my $k1 = (exists($refine_solution->{VALUES}->[0]->{$known_motif->[0]}) ?
+		  $refine_solution->{VALUES}->[0]->{$known_motif->[0]} : 0) +
+		    (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
+		     $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
+		     $refinement_factor : 0);
+	my $c2 = (exists($refine_solution->{VALUES}->[1]
+			 ->{$calculate_motif->[1]}) ?
+		  $refine_solution->{VALUES}->[1]->{$calculate_motif->[1]} :
+		  0) +
+		    (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
+		     $solution->[$int_sol_pos_hash->{2}
+				 ->{$calculate_motif->[1]}] *
+		     $refinement_factor : 0);
+	my $k2 = (exists($refine_solution->{VALUES}->[1]->{$known_motif->[1]}) ?
+		  $refine_solution->{VALUES}->[1]->{$known_motif->[1]} : 0) +
+		    (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
+		     $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
+		     $refinement_factor : 0);
+	my $c3 = (exists($refine_solution->{VALUES}->[2]
+			 ->{$calculate_motif->[2]}) ?
+		  $refine_solution->{VALUES}->[2]->{$calculate_motif->[2]} :
+		  0) +
+		    (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
+		     $solution->[$int_sol_pos_hash->{3}
+				 ->{$calculate_motif->[2]}] *
+		     $refinement_factor : 0);
+	my $k3 = (exists($refine_solution->{VALUES}->[2]->{$known_motif->[2]}) ?
+		  $refine_solution->{VALUES}->[2]->{$known_motif->[2]} : 0) +
+		    (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
+		     $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
+		     $refinement_factor : 0);
+
+	$kd += $effect_range * ($c1 - $k1);
+	$kd += $effect_range * ($c2 - $k2);
+	$kd += $effect_range * ($c3 - $k3);
+      }
+    else
+      {
+	my $c1 = (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
+		  $solution->[$int_sol_pos_hash->{1}->{$calculate_motif->[0]}] *
+		  .1 : 0);
+	my $k1 = (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
+		  $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
+		  .1 : 0);
+	my $c2 = (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
+		  $solution->[$int_sol_pos_hash->{2}->{$calculate_motif->[1]}] *
+		  .1 : 0);
+	my $k2 = (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
+		  $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
+		  .1 : 0);
+	my $c3 = (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
+		  $solution->[$int_sol_pos_hash->{3}->{$calculate_motif->[2]}] *
+		  .1 : 0);
+	my $k3 = (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
+		  $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
+		  .1 : 0);
+
+	$kd += $effect_range * ($c1 - $k1);
+	$kd += $effect_range * ($c2 - $k2);
+	$kd += $effect_range * ($c3 - $k3);
+
+##    debug("Position 1: $calculate_motif->[0]_c vs. $known_motif->[0]_k");
+#	$kd += $effect_range *
+#	  ($solution->[$int_sol_pos_hash->{1}->{$calculate_motif->[0]}] * .1 -
+#	   $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] * .1);
+##    debug("Position 2: $calculate_motif->[1]_c vs. $known_motif->[1]_k");
+#	$kd += $effect_range *
+#	  ($solution->[$int_sol_pos_hash->{2}->{$calculate_motif->[1]}] * .1 -
+#	   $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] * .1);
+##    debug("Position 3: $calculate_motif->[2]_c vs. $known_motif->[2]_k");
+#	$kd += $effect_range *
+#	  ($solution->[$int_sol_pos_hash->{3}->{$calculate_motif->[2]}] * .1 -
+#	   $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] * .1);
+      }
 
     return($kd);
   }
 
 sub getSolutionExhaustively
   {
-    my $cp1s      = [sort {$a cmp $b} @{$_[0]}];
-    my $ips       = [sort {$a cmp $b} @{$_[1]}];
-    my $cp2s      = [sort {$a cmp $b} @{$_[2]}];
-    my $known_kds = $_[3]; #An array of arrays containing [cp1,ip,cp2,kd]
+    my $cp1s              = [sort {$a cmp $b} @{$_[0]}];
+    my $ips               = [sort {$a cmp $b} @{$_[1]}];
+    my $cp2s              = [sort {$a cmp $b} @{$_[2]}];
+    my $known_kds         = $_[3];#An array of arrays containing [cp1,ip,cp2,kd]
+    my $refine_solution   = $_[4];
+    my $refinement_factor = $_[5];
+    my $refine_solution_unaltered = $_[6];
 
     if(scalar(@$known_kds) < 2)
       {
@@ -615,11 +939,11 @@ sub getSolutionExhaustively
     my $num_poss = 11**scalar(@order);
     my($ccp1,$cip,$ccp2,$target_kd);
     my($kcp1,$kip,$kcp2,$known_kd);
-    my $real_solution    = {};
+#    my $real_solution    = {};
     my $best_solution    = {};
     my $array_sizes      = [map {11} @order];
     my $stddev           = 0;
-    my($best_stddev,$errsum,$num_calcs);
+    my($best_stddev);#,$errsum,$num_calcs);
 
     #Set up a hash that keeps track of the positions of the important values
     #based on pair position and nucleotide values so that we don't have to
@@ -638,6 +962,13 @@ sub getSolutionExhaustively
 	  {error("We've gone out of the bounds of the order array.  This ",
 		 "should not have happened.  Please consult the developer ",
 		 "with this exact message.")}
+      }
+
+    if(defined($refine_solution))
+      {
+	$best_stddev = getStandardDeviation($refine_solution_unaltered,
+					    $known_kds);
+	verbose("Overall Starting Standard Deviation: [$best_stddev].");
       }
 
     while(GetNextIndepCombo($internal_solution,$array_sizes))
@@ -677,35 +1008,43 @@ sub getSolutionExhaustively
 #	    @{$internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
 #				  $#{$internal_solution}]}];
 #	reportSolution($real_solution) if($DEBUG);
-	$errsum = 0;
-	$num_calcs = 0;
-
-	foreach my $calculate_kd_array (@$known_kds)
-	  {
+#	$errsum = 0;
+#	$num_calcs = 0;
+#
+#	foreach my $calculate_kd_array (@$known_kds)
+#	  {
 #	    ($ccp1,$cip,$ccp2,$target_kd) = @$calculate_kd_array;
-
+#
 #	    debug("Calculating [$ccp1,$cip,$ccp2].");
-
-	    foreach my $known_kd_array (@$known_kds)
-	      {
-		next if($known_kd_array eq $calculate_kd_array);
-		$num_calcs++;
+#
+#	    foreach my $known_kd_array (@$known_kds)
+#	      {
+#		next if($known_kd_array eq $calculate_kd_array);
+#		$num_calcs++;
 #		($kcp1,$kip,$kcp2,$known_kd) = @$known_kd_array;
 #		$errsum += abs($target_kd -
 #			       calculateKd($real_solution,
 #					   [$ccp1,$cip,$ccp2],
 #					   [$kcp1,$kip,$kcp2],
 #					   $known_kd));
-		$errsum += ($calculate_kd_array->[3] -
-			    internalCalculateKd($internal_solution,
-						$int_sol_pos_hash,
-						$calculate_kd_array,
-						$known_kd_array))**2;
-	      }
-	  }
+#		$errsum += ($calculate_kd_array->[3] -
+#			    internalCalculateKd($internal_solution,
+#						$int_sol_pos_hash,
+#						$calculate_kd_array,
+#						$known_kd_array,
+#					        $refine_solution,
+#					        $refinement_factor))**2;
+#	      }
+#	  }
 
 #	$real_solution->{STDDEV} = $errsum / $num_calcs;
-	$stddev = sqrt($errsum / $num_calcs);
+#	$stddev = sqrt($errsum / $num_calcs);
+
+	$stddev = getInternalStandardDeviation($internal_solution,
+					       $int_sol_pos_hash,
+					       $known_kds,
+					       $refine_solution,
+					       $refinement_factor);
 
 	#Copy the solution to the best solution if it has a smaller STDDEV
 #	if(!exists($best_solution->{STDDEV}) ||
@@ -715,11 +1054,31 @@ sub getSolutionExhaustively
 	  {
 	    $best_stddev            = $stddev;
 	    $best_internal_solution = [@$internal_solution];
-	    my $i = 0;
-	    verbose("Best Solution [with STD DEV $stddev]: ",
-		    join(',',
-			 map {$order[$i++] . ":" . ($_ * .1)}
-			 @{$best_internal_solution}));
+
+	    if(defined($refine_solution))
+	      {
+		my $ary = mergeRefinements($refine_solution->{VALUES},
+					   $refinement_factor,
+					   $best_internal_solution,
+					   \@order,
+					   $cp1s,
+					   $ips,
+					   $cp2s);
+		verbose("Best Solution [with STD DEV $best_stddev]: ",
+			join(',',
+			     map {my $x=$_;
+				  map {"$_:$x->{$_}"}
+				    sort {$a cmp $b} keys(%$x)}
+			     @$ary));
+	      }
+	    else
+	      {
+		my $i = 0;
+		verbose("Best Solution [with STD DEV $stddev]: ",
+			join(',',
+			     map {$order[$i++] . ":" . ($_ * .1)}
+			     @{$best_internal_solution}));
+	      }
 	  }
 
 	unless($cnt % 10000)
@@ -734,28 +1093,93 @@ sub getSolutionExhaustively
 	  }
       }
 
-    my $i = 0;
-    #$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
-    $real_solution->{VALUES} =
-      [{map {$order[$i++] => $_ * .1}
-	@{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
-       {map {$order[$i++] => $_ * .1}
-	@{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
-						    scalar(@$ips) - 1)]},
-       {map {$order[$i++] => $_ * .1}
-	@{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
-				   $#{$best_internal_solution}]}];
-    $real_solution->{STDDEV} = $best_stddev;
+    if(defined($refine_solution))
+      {
+	$best_solution->{VALUES} = mergeRefinements($refine_solution->{VALUES},
+						    $refinement_factor,
+						    $best_internal_solution,
+						    \@order,
+						    $cp1s,
+						    $ips,
+						    $cp2s);
+#	#$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
+#	$best_solution->{VALUES} =
+#	  [{map {my $j = $i++;$order[$j] =>
+#		   $refine_solution->{VALUES}->[0]->{$order[$j]} +
+#		     ($_ * $refinement_factor)}
+#	    @{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
+#	   {map {my $j = $i++;$order[$j] =>
+#		   $refine_solution->{VALUES}->[1]->{$order[$j]} +
+#		     ($_ * $refinement_factor)}
+#	    @{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
+#							scalar(@$ips) - 1)]},
+#	   {map {my $j = $i++;$order[$j] =>
+#		   $refine_solution->{VALUES}->[2]->{$order[$j]} +
+#		     ($_ * $refinement_factor)}
+#	    @{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
+#				       $#{$best_internal_solution}]}];
+      }
+    else
+      {
+	my $i = 0;
+
+	#$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
+	$best_solution->{VALUES} =
+	  [{map {$order[$i++] => $_ * .1}
+	    @{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
+	   {map {$order[$i++] => $_ * .1}
+	    @{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
+							scalar(@$ips) - 1)]},
+	   {map {$order[$i++] => $_ * .1}
+	    @{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
+				       $#{$best_internal_solution}]}];
+      }
+
+    $best_solution->{STDDEV} = $best_stddev;
 
     return($best_solution);
   }
 
+sub mergeRefinements
+  {
+    my $refine_val_ary     = $_[0];
+    my $refinement_factor  = $_[1];
+    my $internal_solution  = $_[2];
+    my $order              = $_[3];
+    my $cp1s               = $_[4];
+    my $ips                = $_[5];
+    my $cp2s               = $_[6];
+    my $real_solution_vals = {};
+
+    my $i = 0;
+
+    #[{AT => ...},{AA => ...},{AT => ...}]
+    $real_solution_vals =
+      [{map {my $j = $i++;$order->[$j] => $refine_val_ary->[0]->{$order->[$j]} +
+	       ($_ * $refinement_factor)}
+	@{$internal_solution}[0..(scalar(@$cp1s) - 1)]},
+       {map {my $j = $i++;$order->[$j] => $refine_val_ary->[1]->{$order->[$j]} +
+	       ($_ * $refinement_factor)}
+	@{$internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) + scalar(@$ips) -
+					       1)]},
+       {map {my $j = $i++;$order->[$j] => $refine_val_ary->[2]->{$order->[$j]} +
+	       ($_ * $refinement_factor)}
+	@{$internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
+			      $#{$internal_solution}]}];
+
+    return($real_solution_vals);
+  }
+
 sub getSolutionUsingGA
   {
-    my $cp1s      = [sort {$a cmp $b} @{$_[0]}];
-    my $ips       = [sort {$a cmp $b} @{$_[1]}];
-    my $cp2s      = [sort {$a cmp $b} @{$_[2]}];
-    my $known_kds = $_[3]; #An array of arrays containing [cp1,ip,cp2,kd]
+    my $cp1s              = [sort {$a cmp $b} @{$_[0]}];
+    my $ips               = [sort {$a cmp $b} @{$_[1]}];
+    my $cp2s              = [sort {$a cmp $b} @{$_[2]}];
+    my $known_kds         = $_[3];#An array of arrays containing [cp1,ip,cp2,kd]
+    my $refine_solution   = $_[4];
+    my $refinement_factor = $_[5];
+    my $refine_solution_unaltered = $_[6];
+
     #globals: $pop_size, $mutation_rate, $crossover_rate, $crossover_amount,
     #         $crossover_cutoff, $max_seconds, $target_stddev
     my $target_fitness = ($target_stddev == 0 ?
@@ -790,6 +1214,17 @@ sub getSolutionUsingGA
 		 "with this exact message.")}
       }
 
+    my($best_fitness);
+    if(defined($refine_solution))
+      {
+	my $best_stddev = getStandardDeviation($refine_solution_unaltered,
+					       $known_kds);
+	$best_fitness = exp(1000*(1/$best_stddev));
+	verbose("Overall Starting Standard Deviation: [$best_stddev]:");
+	verbose(reportSolution($refine_solution)) if($DEBUG);
+	verbose(reportSolution($refine_solution_unaltered)) if($DEBUG);
+      }
+
     ##
     ##PRELIMINARY DESIGN
     ##
@@ -816,11 +1251,10 @@ sub getSolutionUsingGA
     #Mark the time
     markTime();
     #While running time < max_seconds and best fitness < target fitness
-    my($best_fitness,@fitnesses,$best_internal_solution,$rand1,$rand2,$sum,$j,
+    my(@fitnesses,$best_internal_solution,$rand1,$rand2,$sum,$j,
        $mom,$dad,@new_solutions,$population,$total_fitness);
     my $generation_num = 0;
-    while(($max_seconds == 0 || markTime(-1) < $max_seconds) &&
-	  (!defined($best_fitness) || $target_fitness == 0 ||
+    while((!defined($best_fitness) || $target_fitness == 0 ||
 	   $best_fitness < $target_fitness))
       {
 	verboseOverMe("Generation ",++$generation_num,".  Assessing fitness.");
@@ -833,9 +1267,13 @@ sub getSolutionUsingGA
 	foreach my $internal_solution (@$population)
 	  {
 	    #Assign solution fitness exp(1000*(1/stddev))
-	    push(@fitnesses,exp(1000*(1/getStandardDeviation($internal_solution,
-						       $int_sol_pos_hash,
-						       $known_kds))));
+	    push(@fitnesses,
+		 exp(1000*
+		     (1/getInternalStandardDeviation($internal_solution,
+						     $int_sol_pos_hash,
+						     $known_kds,
+						     $refine_solution,
+						     $refinement_factor))));
 	    $total_fitness += $fitnesses[-1];
 	    #If fitness is better than the best or the best is not yet assigned
 	    if(!defined($best_fitness) || $fitnesses[-1] > $best_fitness)
@@ -845,16 +1283,38 @@ sub getSolutionUsingGA
 		$best_fitness = $fitnesses[-1];
 
 		my $best_stddev = 1/(log($best_fitness)/1000);
-		my $i = 0;
-		verbose("Best Solution [with STD DEV $best_stddev]: ",
-			join(',',
-			     map {$order[$i++] . ":" . ($_ * .1)}
-			     @{$best_internal_solution}));
+
+		if(defined($refine_solution))
+		  {
+		    my $ary = mergeRefinements($refine_solution->{VALUES},
+					       $refinement_factor,
+					       $best_internal_solution,
+					       \@order,
+					       $cp1s,
+					       $ips,
+					       $cp2s);
+		    verbose("Best Solution [with STD DEV $best_stddev]: ",
+			    join(',',
+				 map {my $x=$_;
+				      map {"$_:$x->{$_}"}
+					sort {$a cmp $b} keys(%$x)}
+				 @$ary));
+		  }
+		else
+		  {
+		    my $i = 0;
+		    verbose("Best Solution [with STD DEV $best_stddev]: ",
+			    join(',',
+				 map {$order[$i++] . ":" . ($_ * .1)}
+				 @$best_internal_solution));
+		  }
 	      }
 	  }
 
 	debug("Total Fitness: [$total_fitness]  Average Fitness: [",
 	      $total_fitness / scalar(@fitnesses),"].");
+
+	last if($max_seconds != 0 && markTime(-1) > $max_seconds);
 
 	verboseOverMe("Beginning Natural Selection & Mutations.");
 
@@ -922,21 +1382,35 @@ sub getSolutionUsingGA
       }
 
     #Convert the internal solution to a "Real solution" so we can return it
-    my $i = 0;
-    #$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
-    debug("Last element of best internal solution: ",
-	  $#{$best_internal_solution}," = ",
-	  $best_internal_solution->[$#{$best_internal_solution}]);
     my $best_solution = {};
-    $best_solution->{VALUES} =
-      [{map {$order[$i++] => $_ * .1}
-	@{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
-       {map {$order[$i++] => $_ * .1}
-	@{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
-						    scalar(@$ips) - 1)]},
-       {map {$order[$i++] => $_ * .1}
-	@{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
-				   $#{$best_internal_solution}]}];
+    if(defined($refine_solution))
+      {
+	$best_solution->{VALUES} = mergeRefinements($refine_solution->{VALUES},
+						    $refinement_factor,
+						    $best_internal_solution,
+						    \@order,
+						    $cp1s,
+						    $ips,
+						    $cp2s);
+      }
+    else
+      {
+	my $i = 0;
+	#$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
+	debug("Last element of best internal solution: ",
+	      $#{$best_internal_solution}," = ",
+	      $best_internal_solution->[$#{$best_internal_solution}]);
+	$best_solution->{VALUES} =
+	  [{map {$order[$i++] => $_ * .1}
+	    @{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
+	   {map {$order[$i++] => $_ * .1}
+	    @{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
+							scalar(@$ips) - 1)]},
+	   {map {$order[$i++] => $_ * .1}
+	    @{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
+				       $#{$best_internal_solution}]}];
+      }
+
     $best_solution->{STDDEV} = 1/(log($best_fitness)/1000);
 
     return($best_solution);
@@ -951,6 +1425,10 @@ sub pointMutate
     my $solutions = [@_];
     #global: $mutation_rate
 
+    #Note, this does not need to change to accommodate the refining solution
+    #method because the internal solution is simply an integer between 0 and 10.
+    #We are essentially changing this number times the refinement factor when
+    #refining an existing solution.
     foreach my $solution (@$solutions)
       {foreach my $index (0..$#{$solution})
 	 {if(rand() <= $mutation_rate)
@@ -973,6 +1451,11 @@ sub crossover
       {
 	foreach my $position (0..$#{$daughter_solution})
 	  {
+	    #Note, if we are refining a solution, multiplying by .1 here is OK
+	    #because the internal solution supplied consists of integers from 0
+	    #to 10.  This means that the crossover cutoff will be applied to the
+	    #refined solution based on the refinement factor instead of the
+	    #actual values in the refining solution.  This is what we want.
 	    if(($daughter_solution->[$position] * .1 >= $crossover_cutoff ||
 		$son_solution->[$position] * .1 >= $crossover_cutoff) &&
 	       rand() <= $crossover_amount)
@@ -993,16 +1476,20 @@ sub getRandomInternalSolution
   {
     my $size = $_[0];
     my $internal_solution = [];
+    #Note, this does not need to change to accommodate the refining solution
+    #method because the internal solution is simply an integer between 0 and 10.
     foreach(1..$size)
       {push(@$internal_solution,int(rand(11)))}
     return($internal_solution);
   }
 
-sub getStandardDeviation
+sub getInternalStandardDeviation
   {
     my $internal_solution = $_[0];
     my $int_sol_pos_hash  = $_[1];
     my $known_kds         = $_[2]; #An array of arrays: [[cp1,ip,cp2,kd],,,]
+    my $refine_solution   = $_[3];
+    my $refinement_factor = $_[4];
 
     my $errsum    = 0;
     my $num_calcs = 0;
@@ -1017,7 +1504,34 @@ sub getStandardDeviation
 			internalCalculateKd($internal_solution,
 					    $int_sol_pos_hash,
 					    $calculate_kd_array,
-					    $known_kd_array))**2;
+					    $known_kd_array,
+					    $refine_solution,
+					    $refinement_factor))**2;
+	  }
+      }
+
+    return(sqrt($errsum / $num_calcs));
+  }
+
+sub getStandardDeviation
+  {
+    my $solution  = $_[0];
+    my $known_kds = $_[1]; #An array of arrays: [[cp1,ip,cp2,kd],,,]
+
+    my $errsum    = 0;
+    my $num_calcs = 0;
+
+    foreach my $calculate_kd_array (@$known_kds)
+      {
+	foreach my $known_kd_array (@$known_kds)
+	  {
+	    next if($known_kd_array eq $calculate_kd_array);
+	    $num_calcs++;
+	    $errsum += ($calculate_kd_array->[3] -
+			calculateKd($solution,
+				    $calculate_kd_array,
+				    $known_kd_array,
+				    $known_kd_array->[3]))**2;
 	  }
       }
 
@@ -1029,6 +1543,8 @@ sub copySolution
     my $solution = $_[0];
     my $copy = {VALUES => [map {my $x = {%$_};$x} @{$solution->{VALUES}}],
 		STDDEV => $solution->{STDDEV}};
+    if(exists($solution->{EFFECT}))
+      {$copy->{EFFECT} = $solution->{EFFECT}}
     return($copy);
   }
 
@@ -1203,7 +1719,38 @@ rwleach\@ccr.buffalo.edu
 
 * OUTPUT FORMAT: Example:
 
+Effect Range: 472
+Solution Standard Deviation: 15.5409137440499
+	Position 1:
+		AU	1
+		UA	0.8
+		GC	0.7
+		CG	
+		GU	
+		UG	
+	Position 2:
+		AG	
+		GA	
+		AC	
+		CA	0.8
+		AA	
+		GG	
+		CC	
+		CU	
+		UC	
+		UU	
+	Position 3:
+		AU	
+		UA	
+		GC	0.6
+		CG	0.2
+		GU	
+		UG	0.1
 
+                 The lines without numbers represent under-representation of the
+                 input data.  If a pair is not represented in a position, an
+                 optimized value cannot be assigned to it.  These factors are
+                 assumed to be 0 when optimizing.
 
 end_print
 
@@ -1254,12 +1801,29 @@ end_print
      -r|--effect-range    OPTIONAL [410.4] The maximum difference in Kd
                                    observed when loops differ by only one base
                                    pair (including one closing base pair on
-                                   each end).
+                                   each end).  Cannot be used with the -f
+                                   option.
+     -f|--refine-solution OPTIONAL [nothing] Supply a perviously output solution
+                                   file in the format of the output of this
+                                   script (See OUTPUT FORMAT in --help).  The
+                                   algorithm will add a decimal place to the
+                                   supplied solution to refine it by a decimal
+                                   place.  The smallest decimal place present in
+                                   the supplied solution file is used for all
+                                   the contained factors.  Factors are adjusted
+                                   up or down by half of the next decimal place
+                                   present.  For example, if your current
+                                   factors are in increments of tenths, then the
+                                   refined solution will add facotrs ranging
+                                   from -0.05 to 0.05 (inclusive).  Factors will
+                                   never go below zero or above 1.  This option
+                                   cannot be used with the -v or -r options.
      -v|--cross-validate  OPTIONAL [Off] For each loop in the input file,
                                    calculate the optimized equation based on
                                    the rest of the data, then evaluate whether
                                    the witheld data falls within the calculated
-                                   standard deviation.
+                                   standard deviation.  Cannot be used with the
+                                   -f option.
      -g|--genetic-        OPTIONAL [Off] Search for a solution using a genetic
         algorithm                 algorithm heuristic.  This strategy will
                                    randomly pick a 'population' of solutions
