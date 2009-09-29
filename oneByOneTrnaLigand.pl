@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.2';
+my $software_version_number = '1.3';
 my $created_on_date         = '8/11/2009';
 
 ##
@@ -34,11 +34,12 @@ my $crossover_cutoff    = .7;
 my $crossover_amount   = .5;
 my $max_seconds         = 3600;   #One hour
 my $target_stddev       = 0;     #Must have stddev <= this number to end early
-my $default_effect_range = 410.4;
-my $effect_range        = $default_effect_range;
+my $default_effect_range = 500;
+my $effect_range        = 0;
 my $cross_validate      = 0;
 my @cps                 = ('AU','UA','GC','CG','GU','UG');
 my @ips                 = ('AG','GA','AC','CA','AA','GG','CC','CU','UC','UU');
+my $precision_level     = 1;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, getCommand, quit, and usage
@@ -49,9 +50,12 @@ my $DEBUG         = 0;
 my $ignore_errors = 0;
 
 my $GetOptHash =
-  {'r|effect-range=s'      => \$effect_range,           #OPTIONAL [410.4]
+  {'r|effect-range=s'      => \$effect_range,           #OPTIONAL [largest diff
+					                #          plus 20% or
+					                #          500]
    'f|refine-solution=s'   => sub {push(@refine_files,  #OPTIONAL [nothing]
 					sglob($_[1]))},
+   'l|precision-level=s'   => $precision_level,         #OPTIONAL [1]
    'v|cross-validate!'     => \$cross_validate,         #OPTIONAL [Off]
    'g|genetic-algorithm!'  => \$ga_flag,                #OPTIONAL [Off]
    'p|population-size=s'   => \$pop_size,               #OPTIONAL [10000]
@@ -168,7 +172,7 @@ if(!$overwrite && defined($outfile_suffix))
       }
   }
 
-if($effect_range !~ /^(\d+\.?\d*|\d*\.\d+)$/ || $effect_range == 0)
+if($effect_range !~ /^(\d+\.?\d*|\d*\.\d+)$/)
   {
     error("Invalid effect range entered: [$effect_range].");
     usage(1);
@@ -251,13 +255,21 @@ if(scalar(@refine_files) && $cross_validate)
     quit(-9);
   }
 
-if(scalar(@refine_files) && $effect_range != $default_effect_range)
+if(scalar(@refine_files) && $effect_range != 0)
   {
     error("Incompatible options selected.  You cannot refine solutions (-f) ",
 	  "with an effect range (-r) because the solution contains an effect ",
 	  "range.");
     usage(1);
     quit(-10);
+  }
+
+if($precision_level !~ /^[1-9]\d*$/)
+  {
+    error("Invalid precision level (-l): [$precision_level].  It must be a ",
+	  "positive integer.");
+    usage(1);
+    quit(-11);
   }
 
 verbose('Run conditions: ',getCommand(1));
@@ -331,6 +343,8 @@ foreach my $input_file (@input_files)
     my @known_kds = ();
     my $motif_check = {};
     my $best_solution = [];
+    my $diff_by_one = {};
+    my $largest_diff_by_one = 0;
 
     #For each line in the current input file
     while(getLine(*INPUT))
@@ -398,6 +412,37 @@ foreach my $input_file (@input_files)
 	$ip_hash->{$ip}++;
 	$cp2_hash->{$cp2}++;
 	push(@known_kds,[$cp1,$ip,$cp2,$kd]);
+
+	foreach my $quar ("$cp1$ip","$cp1$cp2","$ip$cp2")
+	  {
+	    if(exists($diff_by_one->{$quar}))
+	      {
+		if($kd < $diff_by_one->{$quar}->{SM})
+		  {
+		    if(exists($diff_by_one->{$quar}->{LA}))
+		      {$diff_by_one->{$quar}->{SM} = $kd}
+		    else
+		      {
+			$diff_by_one->{$quar}->{LA} =
+			  $diff_by_one->{$quar}->{SM};
+			$diff_by_one->{$quar}->{SM} = $kd;
+		      }
+		  }
+		elsif(!exists($diff_by_one->{$quar}->{LA}) ||
+		      $kd > $diff_by_one->{$quar}->{LA})
+		  {$diff_by_one->{$quar}->{LA} = $kd}
+		else
+		  {$diff_by_one->{$quar}->{SM} = $kd}
+
+		if(exists($diff_by_one->{$quar}->{LA}) &&
+		   ($diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM}) >
+		   $largest_diff_by_one)
+		  {$largest_diff_by_one =
+		     $diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM}}
+	      }
+	    else
+	      {$diff_by_one->{$quar}->{SM} = $kd}
+	  }
       }
 
     close(INPUT);
@@ -405,6 +450,15 @@ foreach my $input_file (@input_files)
     verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
 	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
 
+    #Set the effect range
+    if($largest_diff_by_one == 0 && $effect_range == 0)
+      {$effect_range = $default_effect_range}
+    elsif($effect_range == 0)
+      {$effect_range = $largest_diff_by_one + ($largest_diff_by_one * .2)}
+
+    verbose("Effect Range: [$effect_range]");
+
+    #Cross-validate if requested and valid
     if($cross_validate && scalar(@known_kds) > 1)
       {
 	my $cross_count = 0;
@@ -424,30 +478,30 @@ foreach my $input_file (@input_files)
 	       $ip_hash->{$motif_array->[1]}  == 1 ||
 	       $cp2_hash->{$motif_array->[2]} == 1)
 	      {
-		warning("Cannot generate a factor for loop: [@$motif_array] ",
-			"because there is not enough data.  One or more of ",
-			"the base pairs only exists in this loop.");
+		warning("Cannot predict a reliable set of factors for loop: ",
+			"[@$motif_array] because one or more of its base ",
+			"pairs does not exist in the remaining data that is ",
+			"being used for optimization.  This script cannot be ",
+			"expected to generate importance factors for base ",
+			"pairs on which it has not data on which to optimize ",
+			"the factor.  Skipping this loop in the cross-",
+			"validation.");
+		next;
 	      }
 
 	    my $solution = {};
 	    if($ga_flag)
 	      {$solution =
-		 getSolutionUsingGA([grep {$cp1_hash->{$motif_array->[0]} > 1}
-				     keys(%$cp1_hash)],
-				    [grep {$ip_hash->{$motif_array->[1]} > 1}
-				     keys(%$ip_hash)],
-				    [grep {$cp2_hash->{$motif_array->[2]} > 1}
-				     keys(%$cp2_hash)],
+		 getSolutionUsingGA([keys(%$cp1_hash)],
+				    [keys(%$ip_hash)],
+				    [keys(%$cp2_hash)],
 				    [grep {$_ ne $motif_array}
 				     @known_kds])}
 	    else
 	      {$solution =
-		 getSolutionExhaustively([grep {$cp1_hash->{$motif_array->[0]}
-						  > 1} keys(%$cp1_hash)],
-					 [grep {$ip_hash->{$motif_array->[1]}
-						  > 1} keys(%$ip_hash)],
-					 [grep {$cp2_hash->{$motif_array->[2]}
-						  > 1} keys(%$cp2_hash)],
+		 getSolutionExhaustively([keys(%$cp1_hash)],
+					 [keys(%$ip_hash)],
+					 [keys(%$cp2_hash)],
 					 [grep {$_ ne $motif_array}
 					  @known_kds])}
 #	    reportSolution($solution);
@@ -1717,7 +1771,7 @@ rwleach\@ccr.buffalo.edu
                 CG,AA,CG	820
                 CG,GG,CG	520
 
-* OUTPUT FORMAT: Example:
+* OUTPUT FORMAT: Regular mode example (without using -v):
 
 Effect Range: 472
 Solution Standard Deviation: 15.5409137440499
@@ -1751,6 +1805,46 @@ Solution Standard Deviation: 15.5409137440499
                  input data.  If a pair is not represented in a position, an
                  optimized value cannot be assigned to it.  These factors are
                  assumed to be 0 when optimizing.
+
+                 With the cross-validate option, multiple solutions are output along with a message of standard deviation of the calculations for the loop left out:
+
+Best Solution 1:
+Effect Range: 472
+Solution Standard Deviation: 67.076514694261
+        Position 1:
+                AU      0.9
+                UA      0.7
+                GC      0.9
+                CG      0.9
+                GU      0.9
+                UG      0.8
+        Position 2:
+                AG      
+                GA      
+                AC      
+                CA      0.7
+                AA      
+                GG      
+                CC      
+                CU      
+                UC      
+                UU      
+        Position 3:
+                AU      0.9
+                UA      0
+                GC      0.2
+                CG      0.1
+                GU      0.3
+                UG      0
+Cross Validation Result: Within predicted standard error: Predicted standard error: 67.076514694261.  Withheld [UA,CA,CG] with a known Kd of 15 and resulted in an average calculated Kd that has a standard deviation of [47.8650185417284].
+Best Solution 2:
+Effect Range: 472
+Solution Standard Deviation: 65.4860020965415
+        Position 1:
+                AU      0.6
+                UA      0.4
+                GC      0.6
+...
 
 end_print
 
@@ -1798,11 +1892,16 @@ end_print
                                    -i "*.txt *.text").  See --help for a
                                    description of the input file format.
                                    *No flag required.
-     -r|--effect-range    OPTIONAL [410.4] The maximum difference in Kd
+     -r|--effect-range    OPTIONAL [500*] The maximum difference in Kd
                                    observed when loops differ by only one base
                                    pair (including one closing base pair on
                                    each end).  Cannot be used with the -f
-                                   option.
+                                   option.  *The largest difference between
+                                   loops which differ by one base pair is
+                                   automatically detected and the effect range
+                                   is set to be this plus 20% (to account for
+                                   randomness).  If no loops differ by one one
+                                   base pair, 500 is the default.
      -f|--refine-solution OPTIONAL [nothing] Supply a perviously output solution
                                    file in the format of the output of this
                                    script (See OUTPUT FORMAT in --help).  The
