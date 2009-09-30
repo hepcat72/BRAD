@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.3';
+my $software_version_number = '1.4';
 my $created_on_date         = '8/11/2009';
 
 ##
@@ -40,6 +40,7 @@ my $cross_validate      = 0;
 my @cps                 = ('AU','UA','GC','CG','GU','UG');
 my @ips                 = ('AG','GA','AC','CA','AA','GG','CC','CU','UC','UU');
 my $precision_level     = 1;
+my $fitness_factor      = 100000;  #Kludge to enhance fittness of good solutions
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, getCommand, quit, and usage
@@ -55,7 +56,7 @@ my $GetOptHash =
 					                #          500]
    'f|refine-solution=s'   => sub {push(@refine_files,  #OPTIONAL [nothing]
 					sglob($_[1]))},
-   'l|precision-level=s'   => $precision_level,         #OPTIONAL [1]
+   'l|precision-level=s'   => \$precision_level,        #OPTIONAL [1]
    'v|cross-validate!'     => \$cross_validate,         #OPTIONAL [Off]
    'g|genetic-algorithm!'  => \$ga_flag,                #OPTIONAL [Off]
    'p|population-size=s'   => \$pop_size,               #OPTIONAL [10000]
@@ -272,6 +273,13 @@ if($precision_level !~ /^[1-9]\d*$/)
     quit(-11);
   }
 
+if($precision_level > 3)
+  {warning("It is recommended that you not make the precision level very high ",
+	   "simply because of the chances of not being able to find a good ",
+	   "solution.  If you do use a high precision level, you should ",
+	   "increase the population size and running time to account for the ",
+	   "greater possibilities.")}
+
 verbose('Run conditions: ',getCommand(1));
 
 
@@ -287,6 +295,12 @@ if(!isStandardOutputToTerminal() && !$noheader)
   {print('#',getVersion(),"\n",
 	 '#',scalar(localtime($^T)),"\n",
 	 '#',getCommand(1),"\n");}
+
+my $rand_input = '1' . ('0' x $precision_level);
+$rand_input++;
+my $conversion_factor = '.' . ('0' x ($precision_level - 1)) . '1';
+debug("Precision Level: $precision_level, Rand Input: $rand_input, ",
+      "Conversion Factor: $conversion_factor");
 
 #For each input file
 foreach my $input_file (@input_files)
@@ -564,7 +578,8 @@ foreach my $input_file (@input_files)
 		    $max_places = $places if($places > $max_places);
 		  }
 
-		$refinement_factor = '0.' . '0' x $max_places . '1';
+		$refinement_factor = '0.' . '0' x ($max_places +
+						   $precision_level - 1) . '1';
 
 		#We want the factor to be between 0 and 1 (inclusive).  Since we
 		#know we're going to be adding at most 10 * refinement_factor
@@ -925,22 +940,22 @@ sub internalCalculateKd
       {
 	my $c1 = (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
 		  $solution->[$int_sol_pos_hash->{1}->{$calculate_motif->[0]}] *
-		  .1 : 0);
+		  $conversion_factor : 0);
 	my $k1 = (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
 		  $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
-		  .1 : 0);
+		  $conversion_factor : 0);
 	my $c2 = (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
 		  $solution->[$int_sol_pos_hash->{2}->{$calculate_motif->[1]}] *
-		  .1 : 0);
+		  $conversion_factor : 0);
 	my $k2 = (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
 		  $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
-		  .1 : 0);
+		  $conversion_factor : 0);
 	my $c3 = (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
 		  $solution->[$int_sol_pos_hash->{3}->{$calculate_motif->[2]}] *
-		  .1 : 0);
+		  $conversion_factor : 0);
 	my $k3 = (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
 		  $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
-		  .1 : 0);
+		  $conversion_factor : 0);
 
 	$kd += $effect_range * ($c1 - $k1);
 	$kd += $effect_range * ($c2 - $k2);
@@ -990,12 +1005,12 @@ sub getSolutionExhaustively
 
     markTime();
     my $cnt = 0;
-    my $num_poss = 11**scalar(@order);
+    my $num_poss = $rand_input**scalar(@order);
     my($ccp1,$cip,$ccp2,$target_kd);
     my($kcp1,$kip,$kcp2,$known_kd);
 #    my $real_solution    = {};
     my $best_solution    = {};
-    my $array_sizes      = [map {11} @order];
+    my $array_sizes      = [map {$rand_input} @order];
     my $stddev           = 0;
     my($best_stddev);#,$errsum,$num_calcs);
 
@@ -1130,7 +1145,7 @@ sub getSolutionExhaustively
 		my $i = 0;
 		verbose("Best Solution [with STD DEV $stddev]: ",
 			join(',',
-			     map {$order[$i++] . ":" . ($_ * .1)}
+			     map {$order[$i++] . ":" . ($_ * $conversion_factor)}
 			     @{$best_internal_solution}));
 	      }
 	  }
@@ -1179,12 +1194,12 @@ sub getSolutionExhaustively
 
 	#$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
 	$best_solution->{VALUES} =
-	  [{map {$order[$i++] => $_ * .1}
+	  [{map {$order[$i++] => $_ * $conversion_factor}
 	    @{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
-	   {map {$order[$i++] => $_ * .1}
+	   {map {$order[$i++] => $_ * $conversion_factor}
 	    @{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
 							scalar(@$ips) - 1)]},
-	   {map {$order[$i++] => $_ * .1}
+	   {map {$order[$i++] => $_ * $conversion_factor}
 	    @{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
 				       $#{$best_internal_solution}]}];
       }
@@ -1235,9 +1250,9 @@ sub getSolutionUsingGA
     my $refine_solution_unaltered = $_[6];
 
     #globals: $pop_size, $mutation_rate, $crossover_rate, $crossover_amount,
-    #         $crossover_cutoff, $max_seconds, $target_stddev
+    #         $crossover_cutoff, $max_seconds, $target_stddev, $fitness_factor
     my $target_fitness = ($target_stddev == 0 ?
-			  0 : exp(1000*(1/$target_stddev)));
+			  0 : exp($fitness_factor*(1/$target_stddev)));
 
     if(scalar(@$known_kds) < 2)
       {
@@ -1245,7 +1260,8 @@ sub getSolutionUsingGA
 	return({});
       }
 
-    debug("Called with [@$cp1s], [@$ips], [@$cp2s], and [@$known_kds].");
+    debug("Called with [@$cp1s], [@$ips], [@$cp2s], and a database of [",
+	  scalar(@$known_kds),"] loops.");
 
     my @order = (@$cp1s,@$ips,@$cp2s);
 
@@ -1273,7 +1289,7 @@ sub getSolutionUsingGA
       {
 	my $best_stddev = getStandardDeviation($refine_solution_unaltered,
 					       $known_kds);
-	$best_fitness = exp(1000*(1/$best_stddev));
+	$best_fitness = exp($fitness_factor*(1/$best_stddev));
 	verbose("Overall Starting Standard Deviation: [$best_stddev]:");
 	verbose(reportSolution($refine_solution)) if($DEBUG);
 	verbose(reportSolution($refine_solution_unaltered)) if($DEBUG);
@@ -1286,7 +1302,7 @@ sub getSolutionUsingGA
     #Mark the time
     #While running time < max_seconds and best stddev > target stddev
     #  For each solution in the population
-    #    Assign solution fitness exp(1000*(1/stddev))
+    #    Assign solution fitness exp($fitness_factor*(1/stddev))
     #    If fitness is better than the best or the best is not yet assigned
     #      Save the best solution
     #  Until the next generation is equal to the population size
@@ -1302,6 +1318,10 @@ sub getSolutionUsingGA
     my $next_generation = [];
     foreach(1..$pop_size)
       {push(@$next_generation,getRandomInternalSolution(scalar(@order)))}
+
+    debug('First Random Internal Solution: [',
+	  join(',',@{$next_generation->[0]}),']');
+
     #Mark the time
     markTime();
     #While running time < max_seconds and best fitness < target fitness
@@ -1320,9 +1340,9 @@ sub getSolutionUsingGA
 	#For each solution in the population
 	foreach my $internal_solution (@$population)
 	  {
-	    #Assign solution fitness exp(1000*(1/stddev))
+	    #Assign solution fitness exp($fitness_factor*(1/stddev))
 	    push(@fitnesses,
-		 exp(1000*
+		 exp($fitness_factor*
 		     (1/getInternalStandardDeviation($internal_solution,
 						     $int_sol_pos_hash,
 						     $known_kds,
@@ -1336,7 +1356,7 @@ sub getSolutionUsingGA
 		$best_internal_solution = [@$internal_solution];
 		$best_fitness = $fitnesses[-1];
 
-		my $best_stddev = 1/(log($best_fitness)/1000);
+		my $best_stddev = $fitness_factor/(log($best_fitness));
 
 		if(defined($refine_solution))
 		  {
@@ -1359,7 +1379,7 @@ sub getSolutionUsingGA
 		    my $i = 0;
 		    verbose("Best Solution [with STD DEV $best_stddev]: ",
 			    join(',',
-				 map {$order[$i++] . ":" . ($_ * .1)}
+				 map {$order[$i++] . ":" . ($_ * $conversion_factor)}
 				 @$best_internal_solution));
 		  }
 	      }
@@ -1455,17 +1475,17 @@ sub getSolutionUsingGA
 	      $#{$best_internal_solution}," = ",
 	      $best_internal_solution->[$#{$best_internal_solution}]);
 	$best_solution->{VALUES} =
-	  [{map {$order[$i++] => $_ * .1}
+	  [{map {$order[$i++] => $_ * $conversion_factor}
 	    @{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
-	   {map {$order[$i++] => $_ * .1}
+	   {map {$order[$i++] => $_ * $conversion_factor}
 	    @{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
 							scalar(@$ips) - 1)]},
-	   {map {$order[$i++] => $_ * .1}
+	   {map {$order[$i++] => $_ * $conversion_factor}
 	    @{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
 				       $#{$best_internal_solution}]}];
       }
 
-    $best_solution->{STDDEV} = 1/(log($best_fitness)/1000);
+    $best_solution->{STDDEV} = $fitness_factor/(log($best_fitness));
 
     return($best_solution);
   }
@@ -1477,7 +1497,7 @@ sub getSolutionUsingGA
 sub pointMutate
   {
     my $solutions = [@_];
-    #global: $mutation_rate
+    #global: $mutation_rate, $rand_input
 
     #Note, this does not need to change to accommodate the refining solution
     #method because the internal solution is simply an integer between 0 and 10.
@@ -1488,7 +1508,7 @@ sub pointMutate
 	 {if(rand() <= $mutation_rate)
 	    {
 #	      debug("Point Mutating.");
-	      $solution->[$index] = int(rand(11));
+	      $solution->[$index] = int(rand($rand_input));
 	    }}}
 
     return(@$solutions);
@@ -1505,13 +1525,13 @@ sub crossover
       {
 	foreach my $position (0..$#{$daughter_solution})
 	  {
-	    #Note, if we are refining a solution, multiplying by .1 here is OK
+	    #Note, if we are refining a solution, multiplying by $conversion_factor here is OK
 	    #because the internal solution supplied consists of integers from 0
 	    #to 10.  This means that the crossover cutoff will be applied to the
 	    #refined solution based on the refinement factor instead of the
 	    #actual values in the refining solution.  This is what we want.
-	    if(($daughter_solution->[$position] * .1 >= $crossover_cutoff ||
-		$son_solution->[$position] * .1 >= $crossover_cutoff) &&
+	    if(($daughter_solution->[$position] * $conversion_factor >= $crossover_cutoff ||
+		$son_solution->[$position] * $conversion_factor >= $crossover_cutoff) &&
 	       rand() <= $crossover_amount)
 	      {
 #		debug("Crossing Over.");
@@ -1533,7 +1553,7 @@ sub getRandomInternalSolution
     #Note, this does not need to change to accommodate the refining solution
     #method because the internal solution is simply an integer between 0 and 10.
     foreach(1..$size)
-      {push(@$internal_solution,int(rand(11)))}
+      {push(@$internal_solution,int(rand($rand_input)))}
     return($internal_solution);
   }
 
@@ -1902,6 +1922,22 @@ end_print
                                    is set to be this plus 20% (to account for
                                    randomness).  If no loops differ by one one
                                    base pair, 500 is the default.
+     -l|--precision-level OPTIONAL [1] An integer greater than 0 that affects
+                                   the number of decimal places in the solution
+                                   factors.  Increasing this number is not
+                                   advisable.  You should add precision by using
+                                   -f, but if on the first pass, you see very
+                                   large standard deviations and an effect range
+                                   that is very large and the increment between
+                                   known Kd's is very small, you might try
+                                   incrementing the precision level *on the
+                                   first pass only*, not on refining solutions.
+                                   Note that this will increase the search
+                                   space, so if you increase the precision
+                                   level, you should also increase the
+                                   population size (-p) and max seconds (-s).
+                                   This parameter is only used if -g is
+                                   supplied.
      -f|--refine-solution OPTIONAL [nothing] Supply a perviously output solution
                                    file in the format of the output of this
                                    script (See OUTPUT FORMAT in --help).  The
