@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.0';
+my $software_version_number = '1.1';
 my $created_on_date         = '8/4/2009';
 
 ##
@@ -27,9 +27,9 @@ my $overwrite           = 0;
 my $noheader            = 0;
 my $max_num_loops       = 33;
 my @starting_loops      = ();
-my $look_ahead          = 0;
 my $test_only           = 0;
 my $random_selection    = 0;
+my $symmetry_mode       = 0;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, getCommand, quit, and usage
@@ -50,7 +50,7 @@ my $GetOptHash =
 				     sglob($_[1]))},
    't|test-only!'       => \$test_only,              #OPTIONAL [Off]
    'r|random-selection!'=> \$random_selection,       #OPTIONAL [Off]
-   'l|look-ahead!'      => \$look_ahead,             #OPTIONAL [Off]
+   'symmetry-mode!'     => \$symmetry_mode,          #OPTIONAL [Off]
    'n|num-to-test=s'    => \$max_num_loops,          #OPTIONAL [33]
    'o|outfile-suffix=s' => \$outfile_suffix,         #OPTIONAL [undef]
    'force|overwrite'    => \$overwrite,              #OPTIONAL [Off]
@@ -184,19 +184,27 @@ if(scalar(@starting_loops))
   {
     foreach my $loop (@starting_loops)
       {
-	my $first_loop = (sort {$a cmp $b} ($loop,scalar(reverse($loop))))[0];
-	if(exists($loop_check->{$first_loop}))
+	my $rev_loop = scalar(reverse($loop));
+	if(exists($loop_check->{$loop}) ||
+	   ($symmetry_mode && exists($loop_check->{$rev_loop})))
 	  {
-	    error("This starting loop: [$loop] was added twice.  It ",
-		  ($loop eq $first_loop ? 'is' : 'may be')," an idential ",
-		  "rotated version of another one that was added.  Your ",
-		  "starting loops have been trimmed to account for the ",
-		  "duplicate.");
+	    error("This starting loop: [$loop] was added twice.  ",
+		  ($symmetry_mode && exists($loop_check->{$rev_loop}) ?
+		   'It is an idential rotated version of another one that ' .
+		   'was added.  ' : ''),"Your starting loops have been ",
+		  "trimmed to account for the duplicate.");
 	  }
 	else
 	  {
-	    $loop_check->{$first_loop} = 0;
-	    push(@tmp_starting_loops,$first_loop);
+	    $loop_check->{$loop} = 0;
+	    if($symmetry_mode)
+	      {
+		#Put the lesser (alphabetically) loop in the starting loops
+		push(@tmp_starting_loops,
+		     (sort {$a cmp $b} ($loop,$rev_loop))[0]);
+	      }
+	    else
+	      {push(@tmp_starting_loops,$loop)}
 	  }
       }
 
@@ -330,6 +338,8 @@ foreach my $input_file (@input_files)
 	      {warning("This loop was not found in your file in ",
 		       "either orientation.")}
 
+	    #Count all the neighbors (loops which differ by 1 BP) that have
+	    #been counted for this current loop
 	    my $neighbor_check = {};
 
 	    #For each alternate closing pair (acp)
@@ -340,15 +350,26 @@ foreach my $input_file (@input_files)
 		   #"$acp,$ip,$cp2" ne reverse("$cp1,$ip,$cp2")
 		  )
 		  {
-		    my $neighbor = (sort {$a cmp $b}
+		    my $neighbor = "$acp,$ip,$cp2";
+		    #Use the loop that is considered lesser, alphabetically,
+		    #when in symmetry mode
+		    if($symmetry_mode)
+		      {$neighbor = (sort {$a cmp $b}
 				    ("$acp,$ip,$cp2",
-				     scalar(reverse("$acp,$ip,$cp2"))))[0];
+				     scalar(reverse("$acp,$ip,$cp2"))))[0]}
+
+		    #If this neighbor has already been counted for this loop,
+		    #skip it
 		    next if(exists($neighbor_check->{$neighbor}));
 		    $neighbor_check->{$neighbor} = 1;
 		    debug("DOING: $neighbor");
+
+		    #If this potential neighbor is among the selected loops,
+		    #Count it as a neighbor to the current loop
 		    if(exists($hash->{"$neighbor"}))
 		      {debug("INCREMENTING ",$hash->{"$neighbor"});
 			$hash->{"$neighbor"}++}
+
 #		    if(exists($hash->{"$acp,$ip,$cp2"}))
 #		      {debug("INCREMENTING ",$hash->{"$acp,$ip,$cp2"});
 #			$hash->{"$acp,$ip,$cp2"}++}
@@ -358,8 +379,10 @@ foreach my $input_file (@input_files)
 #			     $hash->{reverse("$acp,$ip,$cp2")});
 #			$hash->{reverse("$acp,$ip,$cp2")}++}
 		    else
-		      {warning("This loop was not found in your file in ",
-			       "either orientation.")}
+		      {warning("This loop was not found in your file",
+			       ($symmetry_mode ?
+				" in either orientation" : ''),
+			       ": [$acp,$ip,$cp2]")}
 		  }
 
 		#Alternate the last closing pair, skipping the current one
@@ -367,15 +390,26 @@ foreach my $input_file (@input_files)
 		   #"$cp1,$ip,$acp" ne reverse("$cp1,$ip,$cp2")
 		  )
 		  {
-		    my $neighbor = (sort {$a cmp $b}
+		    my $neighbor = "$cp1,$ip,$acp";
+		    #Use the loop that is considered lesser, alphabetically,
+		    #when in symmetry mode
+		    if($symmetry_mode)
+		      {$neighbor = (sort {$a cmp $b}
 				    ("$cp1,$ip,$acp",
-				     scalar(reverse("$cp1,$ip,$acp"))))[0];
+				     scalar(reverse("$cp1,$ip,$acp"))))[0]}
+
+		    #If this neighbor has already been counted for this loop,
+		    #skip it
 		    next if(exists($neighbor_check->{$neighbor}));
 		    $neighbor_check->{$neighbor} = 1;
 		    debug("DOING: $neighbor");
+
+		    #If this potential neighbor is among the selected loops,
+		    #Count it as a neighbor to the current loop
 		    if(exists($hash->{"$neighbor"}))
 		      {debug("INCREMENTING ",$hash->{"$neighbor"});
 			$hash->{"$neighbor"}++}
+
 #		    if(exists($hash->{"$cp1,$ip,$acp"}))
 #		      {debug("INCREMENTING ",$hash->{"$cp1,$ip,$acp"});
 #			$hash->{"$cp1,$ip,$acp"}++}
@@ -385,8 +419,10 @@ foreach my $input_file (@input_files)
 #			     $hash->{reverse("$cp1,$ip,$acp")});
 #			$hash->{reverse("$cp1,$ip,$acp")}++}
 		    else
-		      {warning("This loop was not found in your file in ",
-			       "either orientation.")}
+		      {warning("This loop was not found in your file",
+			       ($symmetry_mode ?
+				" in either orientation" : ''),
+			       ": [$cp1,$ip,$acp]")}
 		  }
 	      }
 
@@ -398,15 +434,26 @@ foreach my $input_file (@input_files)
 		   #"$cp1,$aip,$cp2" ne reverse("$cp1,$ip,$cp2")
 		  )
 		  {
-		    my $neighbor = (sort {$a cmp $b}
+		    my $neighbor = "$cp1,$aip,$cp2";
+		    #Use the loop that is considered lesser, alphabetically,
+		    #when in symmetry mode
+		    if($symmetry_mode)
+		      {$neighbor = (sort {$a cmp $b}
 				    ("$cp1,$aip,$cp2",
-				     scalar(reverse("$cp1,$aip,$cp2"))))[0];
+				     scalar(reverse("$cp1,$aip,$cp2"))))[0]}
+
+		    #If this neighbor has already been counted for this loop,
+		    #skip it
 		    next if(exists($neighbor_check->{$neighbor}));
 		    $neighbor_check->{$neighbor} = 1;
 		    debug("DOING: $neighbor");
+
+		    #If this potential neighbor is among the selected loops,
+		    #Count it as a neighbor to the current loop
 		    if(exists($hash->{"$neighbor"}))
 		      {debug("INCREMENTING ",$hash->{$neighbor});
 			$hash->{$neighbor}++}
+
 #		    if(exists($hash->{"$cp1,$aip,$cp2"}))
 #		      {debug("INCREMENTING ",$hash->{"$cp1,$aip,$cp2"});
 #			$hash->{"$cp1,$aip,$cp2"}++}
@@ -416,8 +463,10 @@ foreach my $input_file (@input_files)
 #			     $hash->{reverse("$cp1,$aip,$cp2")});
 #			$hash->{reverse("$cp1,$aip,$cp2")}++}
 		    else
-		      {warning("This loop was not found in your file in ",
-			       "either orientation: [$cp1,$aip,$cp2].")}
+		      {warning("This loop was not found in your file",
+			       ($symmetry_mode ?
+				" in either orientation" : ''),
+			       ": [$cp1,$aip,$cp2]")}
 		  }
 	      }
 	  }
@@ -487,195 +536,7 @@ foreach my $input_file (@input_files)
 #	      }
 #	  }
 
-	if($look_ahead)
-	  {
-	    #Now I can go a step further and look one more ahead to be able to
-	    #pick a new loop to add in the next iteration that will have the
-	    #fewest number of neighbors off by 1
-	    map {$old_hash->{$_} = $hash->{$_};$hash->{$_} = 0} keys(%$hash);
-
-	    foreach my $loop (grep {$old_hash->{$_} > 0} keys(%$old_hash))
-	      {
-		my($cp1,$ip,$cp2);
-		($cp1,$ip,$cp2)=split(/[^A-Z]+/,$loop);
-
-		debug("PICKED LOOP: $loop");
-
-		if(exists($hash->{"$cp1,$ip,$cp2"}))
-		  {debug("INCREMENTING ",$hash->{"$cp1,$ip,$cp2"});
-		   $hash->{"$cp1,$ip,$cp2"}++}
-#	    elsif("$cp1,$ip,$cp2" ne reverse("$cp1,$ip,$cp2") &&
-#		  exists($hash->{reverse("$cp1,$ip,$cp2")}))
-#	      {debug("INCREMENTING REVERSE ",
-#		     $hash->{reverse("$cp1,$ip,$cp2")});
-#		$hash->{reverse("$cp1,$ip,$cp2")}++}
-		else
-		  {warning("This loop was not found in your file in ",
-			   "either orientation.")}
-
-		my $neighbor_check = {};
-
-		#For each alternate closing pair (acp)
-		foreach my $acp (@cps)
-		  {
-		    #Alternate the first closing pair, skipping the current one
-		    if("$acp,$ip,$cp2" ne "$cp1,$ip,$cp2" #&&
-		       #"$acp,$ip,$cp2" ne reverse("$cp1,$ip,$cp2")
-		      )
-		      {
-			my $neighbor = (sort {$a cmp $b}
-					("$acp,$ip,$cp2",
-					 scalar(reverse("$acp,$ip,$cp2"))))[0];
-			next if(exists($neighbor_check->{$neighbor}));
-			$neighbor_check->{$neighbor} = 1;
-			debug("DOING: $neighbor");
-			if(exists($hash->{"$neighbor"}))
-			  {debug("INCREMENTING ",$hash->{"$neighbor"});
-			   $hash->{"$neighbor"}++}
-#		    if(exists($hash->{"$acp,$ip,$cp2"}))
-#		      {debug("INCREMENTING ",$hash->{"$acp,$ip,$cp2"});
-#			$hash->{"$acp,$ip,$cp2"}++}
-#		    elsif("$acp,$ip,$cp2" ne reverse("$acp,$ip,$cp2") &&
-#			  exists($hash->{reverse("$acp,$ip,$cp2")}))
-#		      {debug("INCREMENTING REVERSE ",
-#			     $hash->{reverse("$acp,$ip,$cp2")});
-#			$hash->{reverse("$acp,$ip,$cp2")}++}
-			else
-			  {warning("This loop was not found in your file in ",
-				   "either orientation.")}
-		      }
-
-		    #Alternate the last closing pair, skipping the current one
-		    if("$cp1,$ip,$acp" ne "$cp1,$ip,$cp2" #&&
-		       #"$cp1,$ip,$acp" ne reverse("$cp1,$ip,$cp2")
-		      )
-		      {
-			my $neighbor = (sort {$a cmp $b}
-					("$cp1,$ip,$acp",
-					 scalar(reverse("$cp1,$ip,$acp"))))[0];
-			next if(exists($neighbor_check->{$neighbor}));
-			$neighbor_check->{$neighbor} = 1;
-			debug("DOING: $neighbor");
-			if(exists($hash->{"$neighbor"}))
-			  {debug("INCREMENTING ",$hash->{"$neighbor"});
-			   $hash->{"$neighbor"}++}
-#		    if(exists($hash->{"$cp1,$ip,$acp"}))
-#		      {debug("INCREMENTING ",$hash->{"$cp1,$ip,$acp"});
-#			$hash->{"$cp1,$ip,$acp"}++}
-#		    elsif("$cp1,$ip,$acp" ne reverse("$cp1,$ip,$acp") &&
-#			  exists($hash->{reverse("$cp1,$ip,$acp")}))
-#		      {debug("INCREMENTING REVERSE ",
-#			     $hash->{reverse("$cp1,$ip,$acp")});
-#			$hash->{reverse("$cp1,$ip,$acp")}++}
-			else
-			  {warning("This loop was not found in your file in ",
-				   "either orientation.")}
-		      }
-		  }
-
-		#For each alternate internal pair
-		foreach my $aip (@ips)
-		  {
-		    #Alternate the last closing pair, skipping the current one
-		    if("$cp1,$aip,$cp2" ne "$cp1,$ip,$cp2" #&&
-		       #"$cp1,$aip,$cp2" ne reverse("$cp1,$ip,$cp2")
-		      )
-		      {
-			my $neighbor =
-			  (sort {$a cmp $b}
-			   ("$cp1,$aip,$cp2",
-			    scalar(reverse("$cp1,$aip,$cp2"))))[0];
-			next if(exists($neighbor_check->{$neighbor}));
-			$neighbor_check->{$neighbor} = 1;
-			debug("DOING: $neighbor");
-			if(exists($hash->{"$neighbor"}))
-			  {debug("INCREMENTING ",$hash->{$neighbor});
-			   $hash->{$neighbor}++}
-#		    if(exists($hash->{"$cp1,$aip,$cp2"}))
-#		      {debug("INCREMENTING ",$hash->{"$cp1,$aip,$cp2"});
-#			$hash->{"$cp1,$aip,$cp2"}++}
-#		    elsif("$cp1,$aip,$cp2" ne reverse("$cp1,$aip,$cp2") &&
-#			  exists($hash->{reverse("$cp1,$aip,$cp2")}))
-#		      {debug("INCREMENTING REVERSE ",
-#			     $hash->{reverse("$cp1,$aip,$cp2")});
-#			$hash->{reverse("$cp1,$aip,$cp2")}++}
-			else
-			  {warning("This loop was not found in your file in ",
-				   "either orientation: [$cp1,$aip,$cp2].")}
-		      }
-		  }
-	      }
-
-
-
-
-#	    foreach my $loop (grep {$old_hash->{$_} > 0} keys(%$old_hash))
-#	      {
-#		my($cp1,$ip,$cp2);
-#		($cp1,$ip,$cp2)=split(/[^A-Z]+/,$loop);
-#
-#		if(exists($hash->{"$cp1,$ip,$cp2"}))
-#		  {$hash->{"$cp1,$ip,$cp2"}++}
-#		elsif("$cp1,$ip,$cp2" ne reverse("$cp1,$ip,$cp2") &&
-#		      exists($hash->{reverse("$cp1,$ip,$cp2")}))
-#		  {$hash->{reverse("$cp1,$ip,$cp2")}++}
-#		else
-#		  {warning("This loop was not found in your file in ",
-#			   "either orientation: [$cp1,$ip,$cp2].")}
-#
-#		#For each alternate closing pair (acp)
-#		foreach my $acp (@cps)
-#		  {
-#		    #Alternate the first closing pair, skipping the current one
-#		    if("$acp,$ip,$cp2" ne "$cp1,$ip,$cp2" &&
-#		       "$acp,$ip,$cp2" ne reverse("$cp1,$ip,$cp2"))
-#		      {
-#			if(exists($hash->{"$acp,$ip,$cp2"}))
-#			  {$hash->{"$acp,$ip,$cp2"}++}
-#			elsif("$acp,$ip,$cp2" ne reverse("$acp,$ip,$cp2") &&
-#			      exists($hash->{reverse("$acp,$ip,$cp2")}))
-#			  {$hash->{reverse("$acp,$ip,$cp2")}++}
-#			else
-#			  {warning("This loop was not found in your file in ",
-#				   "either orientation: [$acp,$ip,$cp2].")}
-#		      }
-#
-#		    #Alternate the last closing pair, skipping the current one
-#		    if("$cp1,$ip,$acp" ne "$cp1,$ip,$cp2" &&
-#		       "$cp1,$ip,$acp" ne reverse("$cp1,$ip,$cp2"))
-#		      {
-#			if(exists($hash->{"$cp1,$ip,$acp"}))
-#			  {$hash->{"$cp1,$ip,$acp"}++}
-#			elsif("$cp1,$ip,$acp" ne reverse("$cp1,$ip,$acp") &&
-#			      exists($hash->{reverse("$cp1,$ip,$acp")}))
-#			  {$hash->{reverse("$cp1,$ip,$acp")}++}
-#			else
-#			  {warning("This loop was not found in your file in ",
-#				   "either orientation: [$cp1,$ip,$acp].")}
-#		      }
-#		  }
-#
-#		#For each alternate internal pair
-#		foreach my $aip (@ips)
-#		  {
-#		    #Alternate the last closing pair, skipping the current one
-#		    if("$cp1,$aip,$cp2" ne "$cp1,$ip,$cp2" &&
-#		       "$cp1,$aip,$cp2" ne reverse("$cp1,$ip,$cp2"))
-#		      {
-#			if(exists($hash->{"$cp1,$aip,$cp2"}))
-#			  {$hash->{"$cp1,$aip,$cp2"}++}
-#			elsif("$cp1,$aip,$cp2" ne reverse("$cp1,$aip,$cp2") &&
-#			      exists($hash->{reverse("$cp1,$aip,$cp2")}))
-#			  {$hash->{reverse("$cp1,$aip,$cp2")}++}
-#			else
-#			  {warning("This loop was not found in your file in ",
-#				   "either orientation: [$cp1,$aip,$cp2].")}
-#		      }
-#		  }
-#	      }
-	  }
-	else
-	  {map {$old_hash->{$_} = $hash->{$_}} keys(%$hash)}
+	map {$old_hash->{$_} = $hash->{$_}} keys(%$hash);
       }
 
     foreach((scalar(@starting_loops)+1)..$max_num_loops)
@@ -707,8 +568,10 @@ foreach my $input_file (@input_files)
 #		     $hash->{reverse("$cp1,$ip,$cp2")});
 #		$hash->{reverse("$cp1,$ip,$cp2")}++}
 	    else
-	      {warning("This loop was not found in your file in ",
-		       "either orientation.")}
+	      {warning("This loop was not found in your file",
+		       ($symmetry_mode ?
+			" in either orientation" : ''),
+		       ": [$cp1,$ip,$cp2]")}
 
 	    my $neighbor_check = {};
 
@@ -720,15 +583,26 @@ foreach my $input_file (@input_files)
 		   #"$acp,$ip,$cp2" ne reverse("$cp1,$ip,$cp2")
 		  )
 		  {
-		    my $neighbor = (sort {$a cmp $b}
+		    my $neighbor = "$acp,$ip,$cp2";
+		    #Use the loop that is considered lesser, alphabetically,
+		    #when in symmetry mode
+		    if($symmetry_mode)
+		      {$neighbor = (sort {$a cmp $b}
 				    ("$acp,$ip,$cp2",
-				     scalar(reverse("$acp,$ip,$cp2"))))[0];
+				     scalar(reverse("$acp,$ip,$cp2"))))[0]}
+
+		    #If this neighbor has already been counted for this loop,
+		    #skip it
 		    next if(exists($neighbor_check->{$neighbor}));
 		    $neighbor_check->{$neighbor} = 1;
 		    debug("DOING: $neighbor");
+
+		    #If this potential neighbor is among the selected loops,
+		    #Count it as a neighbor to the current loop
 		    if(exists($hash->{"$neighbor"}))
 		      {debug("INCREMENTING ",$hash->{"$neighbor"});
 			$hash->{"$neighbor"}++}
+
 #		    if(exists($hash->{"$acp,$ip,$cp2"}))
 #		      {debug("INCREMENTING ",$hash->{"$acp,$ip,$cp2"});
 #			$hash->{"$acp,$ip,$cp2"}++}
@@ -738,8 +612,10 @@ foreach my $input_file (@input_files)
 #			     $hash->{reverse("$acp,$ip,$cp2")});
 #			$hash->{reverse("$acp,$ip,$cp2")}++}
 		    else
-		      {warning("This loop was not found in your file in ",
-			       "either orientation.")}
+		      {warning("This loop was not found in your file",
+			       ($symmetry_mode ?
+				" in either orientation" : ''),
+			       ": [$acp,$ip,$cp2]")}
 		  }
 
 		#Alternate the last closing pair, skipping the current one
@@ -747,15 +623,26 @@ foreach my $input_file (@input_files)
 		   #"$cp1,$ip,$acp" ne reverse("$cp1,$ip,$cp2")
 		  )
 		  {
-		    my $neighbor = (sort {$a cmp $b}
+		    my $neighbor = "$cp1,$ip,$acp";
+		    #Use the loop that is considered lesser, alphabetically,
+		    #when in symmetry mode
+		    if($symmetry_mode)
+		      {$neighbor = (sort {$a cmp $b}
 				    ("$cp1,$ip,$acp",
-				     scalar(reverse("$cp1,$ip,$acp"))))[0];
+				     scalar(reverse("$cp1,$ip,$acp"))))[0]}
+
+		    #If this neighbor has already been counted for this loop,
+		    #skip it
 		    next if(exists($neighbor_check->{$neighbor}));
 		    $neighbor_check->{$neighbor} = 1;
 		    debug("DOING: $neighbor");
+
+		    #If this potential neighbor is among the selected loops,
+		    #Count it as a neighbor to the current loop
 		    if(exists($hash->{"$neighbor"}))
 		      {debug("INCREMENTING ",$hash->{"$neighbor"});
 			$hash->{"$neighbor"}++}
+
 #		    if(exists($hash->{"$cp1,$ip,$acp"}))
 #		      {debug("INCREMENTING ",$hash->{"$cp1,$ip,$acp"});
 #			$hash->{"$cp1,$ip,$acp"}++}
@@ -765,8 +652,10 @@ foreach my $input_file (@input_files)
 #			     $hash->{reverse("$cp1,$ip,$acp")});
 #			$hash->{reverse("$cp1,$ip,$acp")}++}
 		    else
-		      {warning("This loop was not found in your file in ",
-			       "either orientation.")}
+		      {warning("This loop was not found in your file",
+			       ($symmetry_mode ?
+				" in either orientation" : ''),
+			       ": [$cp1,$ip,$acp]")}
 		  }
 	      }
 
@@ -778,15 +667,26 @@ foreach my $input_file (@input_files)
 		   #"$cp1,$aip,$cp2" ne reverse("$cp1,$ip,$cp2")
 		  )
 		  {
-		    my $neighbor = (sort {$a cmp $b}
+		    my $neighbor = "$cp1,$aip,$cp2";
+		    #Use the loop that is considered lesser, alphabetically,
+		    #when in symmetry mode
+		    if($symmetry_mode)
+		      {$neighbor = (sort {$a cmp $b}
 				    ("$cp1,$aip,$cp2",
-				     scalar(reverse("$cp1,$aip,$cp2"))))[0];
+				     scalar(reverse("$cp1,$aip,$cp2"))))[0]}
+
+		    #If this neighbor has already been counted for this loop,
+		    #skip it
 		    next if(exists($neighbor_check->{$neighbor}));
 		    $neighbor_check->{$neighbor} = 1;
 		    debug("DOING: $neighbor");
+
+		    #If this potential neighbor is among the selected loops,
+		    #Count it as a neighbor to the current loop
 		    if(exists($hash->{"$neighbor"}))
 		      {debug("INCREMENTING ",$hash->{$neighbor});
 			$hash->{$neighbor}++}
+
 #		    if(exists($hash->{"$cp1,$aip,$cp2"}))
 #		      {debug("INCREMENTING ",$hash->{"$cp1,$aip,$cp2"});
 #			$hash->{"$cp1,$aip,$cp2"}++}
@@ -796,200 +696,15 @@ foreach my $input_file (@input_files)
 #			     $hash->{reverse("$cp1,$aip,$cp2")});
 #			$hash->{reverse("$cp1,$aip,$cp2")}++}
 		    else
-		      {warning("This loop was not found in your file in ",
-			       "either orientation: [$cp1,$aip,$cp2].")}
+		      {warning("This loop was not found in your file",
+			       ($symmetry_mode ?
+				" in either orientation" : ''),
+			       ": [$cp1,$aip,$cp2]")}
 		  }
 	      }
 	  }
 
-	if($look_ahead)
-	  {
-	    #Now I can go a step further and look one more ahead to be able to
-	    #pick a new loop to add in the next iteration that will have the
-	    #fewest number of neighbors off by 1
-	    map {$old_hash->{$_} = $hash->{$_};$hash->{$_} = 0} keys(%$hash);
-
-	    foreach my $loop (grep {$old_hash->{$_} > 0} keys(%$old_hash))
-	      {
-		my($cp1,$ip,$cp2);
-		($cp1,$ip,$cp2)=split(/[^A-Z]+/,$loop);
-
-		debug("PICKED LOOP: $loop");
-
-		if(exists($hash->{"$cp1,$ip,$cp2"}))
-		  {debug("INCREMENTING ",$hash->{"$cp1,$ip,$cp2"});
-		   $hash->{"$cp1,$ip,$cp2"}++}
-#	    elsif("$cp1,$ip,$cp2" ne reverse("$cp1,$ip,$cp2") &&
-#		  exists($hash->{reverse("$cp1,$ip,$cp2")}))
-#	      {debug("INCREMENTING REVERSE ",
-#		     $hash->{reverse("$cp1,$ip,$cp2")});
-#		$hash->{reverse("$cp1,$ip,$cp2")}++}
-		else
-		  {warning("This loop was not found in your file in ",
-			   "either orientation.")}
-
-		my $neighbor_check = {};
-
-		#For each alternate closing pair (acp)
-		foreach my $acp (@cps)
-		  {
-		    #Alternate the first closing pair, skipping the current one
-		    if("$acp,$ip,$cp2" ne "$cp1,$ip,$cp2" #&&
-		       #"$acp,$ip,$cp2" ne reverse("$cp1,$ip,$cp2")
-		      )
-		      {
-			my $neighbor = (sort {$a cmp $b}
-					("$acp,$ip,$cp2",
-					 scalar(reverse("$acp,$ip,$cp2"))))[0];
-			next if(exists($neighbor_check->{$neighbor}));
-			$neighbor_check->{$neighbor} = 1;
-			debug("DOING: $neighbor");
-			if(exists($hash->{"$neighbor"}))
-			  {debug("INCREMENTING ",$hash->{"$neighbor"});
-			   $hash->{"$neighbor"}++}
-#		    if(exists($hash->{"$acp,$ip,$cp2"}))
-#		      {debug("INCREMENTING ",$hash->{"$acp,$ip,$cp2"});
-#			$hash->{"$acp,$ip,$cp2"}++}
-#		    elsif("$acp,$ip,$cp2" ne reverse("$acp,$ip,$cp2") &&
-#			  exists($hash->{reverse("$acp,$ip,$cp2")}))
-#		      {debug("INCREMENTING REVERSE ",
-#			     $hash->{reverse("$acp,$ip,$cp2")});
-#			$hash->{reverse("$acp,$ip,$cp2")}++}
-			else
-			  {warning("This loop was not found in your file in ",
-				   "either orientation.")}
-		      }
-
-		    #Alternate the last closing pair, skipping the current one
-		    if("$cp1,$ip,$acp" ne "$cp1,$ip,$cp2" #&&
-		       #"$cp1,$ip,$acp" ne reverse("$cp1,$ip,$cp2")
-		      )
-		      {
-			my $neighbor = (sort {$a cmp $b}
-					("$cp1,$ip,$acp",
-					 scalar(reverse("$cp1,$ip,$acp"))))[0];
-			next if(exists($neighbor_check->{$neighbor}));
-			$neighbor_check->{$neighbor} = 1;
-			debug("DOING: $neighbor");
-			if(exists($hash->{"$neighbor"}))
-			  {debug("INCREMENTING ",$hash->{"$neighbor"});
-			   $hash->{"$neighbor"}++}
-#		    if(exists($hash->{"$cp1,$ip,$acp"}))
-#		      {debug("INCREMENTING ",$hash->{"$cp1,$ip,$acp"});
-#			$hash->{"$cp1,$ip,$acp"}++}
-#		    elsif("$cp1,$ip,$acp" ne reverse("$cp1,$ip,$acp") &&
-#			  exists($hash->{reverse("$cp1,$ip,$acp")}))
-#		      {debug("INCREMENTING REVERSE ",
-#			     $hash->{reverse("$cp1,$ip,$acp")});
-#			$hash->{reverse("$cp1,$ip,$acp")}++}
-			else
-			  {warning("This loop was not found in your file in ",
-				   "either orientation.")}
-		      }
-		  }
-
-		#For each alternate internal pair
-		foreach my $aip (@ips)
-		  {
-		    #Alternate the last closing pair, skipping the current one
-		    if("$cp1,$aip,$cp2" ne "$cp1,$ip,$cp2" #&&
-		       #"$cp1,$aip,$cp2" ne reverse("$cp1,$ip,$cp2")
-		      )
-		      {
-			my $neighbor =
-			  (sort {$a cmp $b}
-			   ("$cp1,$aip,$cp2",
-			    scalar(reverse("$cp1,$aip,$cp2"))))[0];
-			next if(exists($neighbor_check->{$neighbor}));
-			$neighbor_check->{$neighbor} = 1;
-			debug("DOING: $neighbor");
-			if(exists($hash->{"$neighbor"}))
-			  {debug("INCREMENTING ",$hash->{$neighbor});
-			   $hash->{$neighbor}++}
-#		    if(exists($hash->{"$cp1,$aip,$cp2"}))
-#		      {debug("INCREMENTING ",$hash->{"$cp1,$aip,$cp2"});
-#			$hash->{"$cp1,$aip,$cp2"}++}
-#		    elsif("$cp1,$aip,$cp2" ne reverse("$cp1,$aip,$cp2") &&
-#			  exists($hash->{reverse("$cp1,$aip,$cp2")}))
-#		      {debug("INCREMENTING REVERSE ",
-#			     $hash->{reverse("$cp1,$aip,$cp2")});
-#			$hash->{reverse("$cp1,$aip,$cp2")}++}
-			else
-			  {warning("This loop was not found in your file in ",
-				   "either orientation: [$cp1,$aip,$cp2].")}
-		      }
-		  }
-	      }
-
-
-
-#	    foreach my $loop (grep {$old_hash->{$_} > 0} keys(%$old_hash))
-#	      {
-#		my($cp1,$ip,$cp2);
-#		($cp1,$ip,$cp2)=split(/[^A-Z]+/,$loop);
-#
-#		if(exists($hash->{"$cp1,$ip,$cp2"}))
-#		  {$hash->{"$cp1,$ip,$cp2"}++}
-#		elsif("$cp1,$ip,$cp2" ne reverse("$cp1,$ip,$cp2") &&
-#		      exists($hash->{reverse("$cp1,$ip,$cp2")}))
-#		  {$hash->{reverse("$cp1,$ip,$cp2")}++}
-#		else
-#		  {warning("This loop was not found in your file in ",
-#			   "either orientation: [$cp1,$ip,$cp2].")}
-#
-#		#For each alternate closing pair (acp)
-#		foreach my $acp (@cps)
-#		  {
-#		    #Alternate the first closing pair, skipping the current one
-#		    if("$acp,$ip,$cp2" ne "$cp1,$ip,$cp2" &&
-#		       "$acp,$ip,$cp2" ne reverse("$cp1,$ip,$cp2"))
-#		      {
-#			if(exists($hash->{"$acp,$ip,$cp2"}))
-#			  {$hash->{"$acp,$ip,$cp2"}++}
-#			elsif("$acp,$ip,$cp2" ne reverse("$acp,$ip,$cp2") &&
-#			      exists($hash->{reverse("$acp,$ip,$cp2")}))
-#			  {$hash->{reverse("$acp,$ip,$cp2")}++}
-#			else
-#			  {warning("This loop was not found in your file in ",
-#				   "either orientation: [$acp,$ip,$cp2].")}
-#		      }
-#
-#		    #Alternate the last closing pair, skipping the current one
-#		    if("$cp1,$ip,$acp" ne "$cp1,$ip,$cp2" &&
-#		       "$cp1,$ip,$acp" ne reverse("$cp1,$ip,$cp2"))
-#		      {
-#			if(exists($hash->{"$cp1,$ip,$acp"}))
-#			  {$hash->{"$cp1,$ip,$acp"}++}
-#			elsif("$cp1,$ip,$acp" ne reverse("$cp1,$ip,$acp") &&
-#			      exists($hash->{reverse("$cp1,$ip,$acp")}))
-#			  {$hash->{reverse("$cp1,$ip,$acp")}++}
-#			else
-#			  {warning("This loop was not found in your file in ",
-#				   "either orientation: [$cp1,$ip,$acp].")}
-#		      }
-#		  }
-#
-#		#For each alternate internal pair
-#		foreach my $aip (@ips)
-#		  {
-#		    #Alternate the last closing pair, skipping the current one
-#		    if("$cp1,$aip,$cp2" ne "$cp1,$ip,$cp2" &&
-#		       "$cp1,$aip,$cp2" ne reverse("$cp1,$ip,$cp2"))
-#		      {
-#			if(exists($hash->{"$cp1,$aip,$cp2"}))
-#			  {$hash->{"$cp1,$aip,$cp2"}++}
-#			elsif("$cp1,$aip,$cp2" ne reverse("$cp1,$aip,$cp2") &&
-#			      exists($hash->{reverse("$cp1,$aip,$cp2")}))
-#			  {$hash->{reverse("$cp1,$aip,$cp2")}++}
-#			else
-#			  {warning("This loop was not found in your file in ",
-#				   "either orientation: [$cp1,$aip,$cp2].")}
-#		      }
-#		  }
-#	      }
-	  }
-	else
-	  {map {$old_hash->{$_} = $hash->{$_}} keys(%$hash)}
+	map {$old_hash->{$_} = $hash->{$_}} keys(%$hash);
       }
 
     #Print the selections
@@ -1012,27 +727,6 @@ foreach my $input_file (@input_files)
 	verbose("[$current_output_file] Output file done.");
       }
   }
-
-
-
-
-
-
-
-
-
-
-##
-## ENTER YOUR POST-FILE-PROCESSING CODE HERE
-##
-
-
-
-
-
-
-
-
 
 verbose("[STDOUT] Output done.") if(!defined($outfile_suffix));
 
@@ -1175,7 +869,7 @@ end_print
       {
         print << 'end_print';
 
-     -i|--input-file*     REQUIRED Space-separated input file(s inside quotes).
+     -i|--input-file*     REQUIRED Space-separated loop file(s inside quotes).
                                    Standard input via redirection is
                                    acceptable.  Perl glob characters (e.g. '*')
                                    are acceptable inside quotes (e.g.
@@ -1199,14 +893,6 @@ end_print
                                    heuristic used in loop selection is not
                                    perfect.  Rerun until you get the coverage
                                    you desire.
-     -l|--look-ahead      OPTIONAL [Off] This feature actually doesn't work.
-                                   Don't use it.  It was an attempt to make a
-                                   more clever choice when choosing loops to
-                                   add to the test set.  It ended up making
-                                   coverage worse.  the idea was to choose
-                                   everything that had some coverage and re-
-                                   evaluate coverage to find things that had
-                                   the absolute worst coverage.  Flawed design.
      -n|--num-to-test     OPTIONAL [33] The number of internal loops to pick.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
