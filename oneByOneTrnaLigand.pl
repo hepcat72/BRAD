@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.4';
+my $software_version_number = '1.5';
 my $created_on_date         = '8/11/2009';
 
 ##
@@ -27,12 +27,13 @@ my $version             = 0;
 my $overwrite           = 0;
 my $noheader            = 0;
 my $ga_flag             = 0;
+my $use_raw_error       = 0;
 my $pop_size            = 10000;
 my $mutation_rate       = .005; #For approx. 1 mutation per 10 sets of 22 vals
 my $crossover_rate      = .7;
 my $crossover_cutoff    = .7;
 my $crossover_amount   = .5;
-my $max_seconds         = 3600;   #One hour
+my $max_seconds         = 0;   #One hour
 my $target_stddev       = 0;     #Must have stddev <= this number to end early
 my $default_effect_range = 500;
 my $effect_range        = 0;
@@ -40,7 +41,12 @@ my $cross_validate      = 0;
 my @cps                 = ('AU','UA','GC','CG','GU','UG');
 my @ips                 = ('AG','GA','AC','CA','AA','GG','CC','CU','UC','UU');
 my $precision_level     = 1;
-my $fitness_factor      = 100000;  #Kludge to enhance fittness of good solutions
+my $fitness_factor      = 100;  #Kludge to enhance fittness of good solutions
+my $unweighted_kd_mode  = 0;
+my $weight_kd_c         = 200;
+my $weight_kd_x         = 1.5;
+my $weight_kd_xsquared  = .005;
+my $weight_kd_xcubed    = .00025;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, getCommand, quit, and usage
@@ -56,15 +62,15 @@ my $GetOptHash =
 					                #          500]
    'f|refine-solution=s'   => sub {push(@refine_files,  #OPTIONAL [nothing]
 					sglob($_[1]))},
-   'l|precision-level=s'   => \$precision_level,        #OPTIONAL [1]
+   'u|use-unweighted-kd!'  => \$unweighted_kd_mode,     #OPTIONAL [Off]
    'v|cross-validate!'     => \$cross_validate,         #OPTIONAL [Off]
    'g|genetic-algorithm!'  => \$ga_flag,                #OPTIONAL [Off]
    'p|population-size=s'   => \$pop_size,               #OPTIONAL [10000]
    'm|mutation-rate=s'     => \$mutation_rate,          #OPTIONAL [0.005]
-   'c|crossover-rate=s'    => \$crossover_rate,         #OPTIONAL [0.7]
-   'k|crossover-cutoff=s'  => \$crossover_cutoff,       #OPTIONAL [0.7]
-   'a|crossover-amount=s'  => \$crossover_amount,       #OPTIONAL [0.5]
-   's|max-seconds=s'       => \$max_seconds,            #OPTIONAL [3600] 1 hr
+   'x|crossover-rate=s'    => \$crossover_rate,         #OPTIONAL [0.7]
+   'crossover-cutoff=s'    => \$crossover_cutoff,       #OPTIONAL [0.7]
+   'crossover-amount=s'    => \$crossover_amount,       #OPTIONAL [0.5]
+   's|max-seconds=s'       => \$max_seconds,            #OPTIONAL [0]
    't|target-stddev=s'     => \$target_stddev,          #OPTIONAL [0]
    'i|input-file=s'        => sub {push(@input_files,   #REQUIRED unless <> is
 					sglob($_[1]))}, #         supplied
@@ -79,6 +85,15 @@ my $GetOptHash =
    'help|?'                => \$help,                   #OPTIONAL [Off]
    'version'               => \$version,                #OPTIONAL [Off]
    'noheader'              => \$noheader,               #OPTIONAL [Off]
+
+   ##Advanced - don't tamper with unless you understand it completely
+
+   'd|kd-weight-d=s'       => \$weight_kd_c,            #OPTIONAL [200]
+   'c|kd-weight-cx=s'      => \$weight_kd_x,            #OPTIONAL [1.5]
+   'b|kd-weight-bx2=s'     => \$weight_kd_xsquared,     #OPTIONAL [0.005]
+   'a|kd-weight-ax3=s'     => \$weight_kd_xcubed,       #OPTIONAL [0.00025]
+   'l|precision-level=s'   => \$precision_level,        #OPTIONAL [1]
+   'e|use-raw-error!'      => \$use_raw_error,          #OPTIONAL [Off]
   };
 
 #If there are no arguments and no files directed or piped in
@@ -280,6 +295,15 @@ if($precision_level > 3)
 	   "increase the population size and running time to account for the ",
 	   "greater possibilities.")}
 
+if($use_raw_error && $unweighted_kd_mode)
+  {
+    warning("-e and -w are incompatible.  If you are using raw error (-e), ",
+	    "you cannot weight the Kd (-w) in the denominator of error/Kd ",
+	    "because raw error does not have Kd in the equation.  We will ",
+	    "thus assume -e was supplied by mistake and turn it off for you.");
+    $use_raw_error = 0;
+  }
+
 verbose('Run conditions: ',getCommand(1));
 
 
@@ -291,10 +315,11 @@ verbose('[STDOUT] Opened for all output.') if(!defined($outfile_suffix));
 
 #Store info. about the run as a comment at the top of the output file if
 #STDOUT has been redirected to a file
+my $header = join('',('#',getVersion(),"\n",
+		      '#',scalar(localtime($^T)),"\n",
+		      '#',getCommand(1),"\n"));
 if(!isStandardOutputToTerminal() && !$noheader)
-  {print('#',getVersion(),"\n",
-	 '#',scalar(localtime($^T)),"\n",
-	 '#',getCommand(1),"\n");}
+  {print($header);}
 
 my $rand_input = '1' . ('0' x $precision_level);
 $rand_input++;
@@ -333,9 +358,9 @@ foreach my $input_file (@input_files)
 	select(OUTPUT);
 
 	#Store info. about the run as a comment at the top of the output file
-	print('#',getVersion(),"\n",
-	      '#',scalar(localtime($^T)),"\n",
-	      '#',getCommand(1),"\n") unless($noheader);
+	#if noheader is not true and we're not in a valid cross-validate mode
+	print($header)
+	  if(!$noheader && (!$cross_validate || scalar(@known_kds) <= 1);
       }
 
     #Open the input file
@@ -349,15 +374,15 @@ foreach my $input_file (@input_files)
       {verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
 	       'Opened input file.')}
 
-    my $line_num     = 0;
-    my $verbose_freq = 100;
-    my $cp1_hash = {};
-    my $ip_hash = {};
-    my $cp2_hash = {};
-    my @known_kds = ();
-    my $motif_check = {};
-    my $best_solution = [];
-    my $diff_by_one = {};
+    my $line_num            = 0;
+    my $verbose_freq        = 100;
+    my $cp1_hash            = {};
+    my $ip_hash             = {};
+    my $cp2_hash            = {};
+    my @known_kds           = ();
+    my $motif_check         = {};
+    my $best_solution       = [];
+    my $diff_by_one         = {};
     my $largest_diff_by_one = 0;
 
     #For each line in the current input file
@@ -414,7 +439,7 @@ foreach my $input_file (@input_files)
 	if(exists($motif_check->{"$cp1,$ip,$cp2"}))
 	  {
 	    error("This motif was found multiple times: [$cp1,$ip,$cp2].  ",
-		  "Keeping the first one and ignorine duplicates.");
+		  "Keeping the first one and ignoring duplicates.");
 	    next;
 	  }
 	else
@@ -427,6 +452,9 @@ foreach my $input_file (@input_files)
 	$cp2_hash->{$cp2}++;
 	push(@known_kds,[$cp1,$ip,$cp2,$kd]);
 
+	#Keep track of the largest difference in Kd's between loops that differ
+	#by only one base pair so we can use it to calculate a good effect
+	#range.
 	foreach my $quar ("$cp1$ip","$cp1$cp2","$ip$cp2")
 	  {
 	    if(exists($diff_by_one->{$quar}))
@@ -522,20 +550,25 @@ foreach my $input_file (@input_files)
 
 	    my($ccp1,$cip,$ccp2,$target_kd);
 	    ($ccp1,$cip,$ccp2,$target_kd) = @$motif_array;
-	    my $errsum = 0;
+#	    my $errsum = 0;
+#
+#	    foreach my $other_motif (grep {$_ ne $motif_array} @known_kds)
+#	      {
+#		my($kcp1,$kip,$kcp2,$known_kd);
+#		($kcp1,$kip,$kcp2,$known_kd) = @$other_motif;
+#		$errsum += ($target_kd -
+#			    calculateKd($solution,
+#					[$ccp1,$cip,$ccp2],
+#					[$kcp1,$kip,$kcp2],
+#					$known_kd))**2;
+#	      }
+#
+#	    my $stddev = sqrt($errsum / (scalar(@known_kds) - 1));
 
-	    foreach my $other_motif (grep {$_ ne $motif_array} @known_kds)
-	      {
-		my($kcp1,$kip,$kcp2,$known_kd);
-		($kcp1,$kip,$kcp2,$known_kd) = @$other_motif;
-		$errsum += ($target_kd -
-			    calculateKd($solution,
-					[$ccp1,$cip,$ccp2],
-					[$kcp1,$kip,$kcp2],
-					$known_kd))**2;
-	      }
-
-	    my $stddev = sqrt($errsum / (scalar(@known_kds) - 1));
+	    my $stddev =
+	      getStandardDeviation($solution,
+				   [grep {$_ ne $motif_array} @known_kds],
+				   $motif_array);
 
 	    print("Best Solution $cross_count:\n");
 	    reportSolution($solution);
@@ -559,7 +592,7 @@ foreach my $input_file (@input_files)
 	my($refine_solution,$refinement_factor,$refine_solution_unaltered);
 	if(defined($refine_file) && $refine_file ne '')
 	  {
-	    $refine_solution = getFactorHash($refine_file);
+	    $refine_solution           = getFactorHash($refine_file);
 	    $refine_solution_unaltered = copySolution($refine_solution);
 
 	    #Figure out what decimal place we're adding to the refined solution
@@ -613,7 +646,8 @@ foreach my $input_file (@input_files)
 				[@known_kds],
 			        $refine_solution,
 			        $refinement_factor,
-			        $refine_solution_unaltered)}
+			        $refine_solution_unaltered,
+			        $current_output_file)}
 	else
 	  {$solution =
 	     getSolutionExhaustively([keys(%$cp1_hash)],
@@ -622,8 +656,9 @@ foreach my $input_file (@input_files)
 				     [@known_kds],
 				     $refine_solution,
 				     $refinement_factor,
-				     $refine_solution_unaltered)}
-	reportSolution($solution);
+				     $refine_solution_unaltered,
+				     $current_output_file)}
+#	reportSolution($solution);
       }
 
     #If an output file name suffix is set
@@ -806,9 +841,8 @@ sub getFactorHash
 sub reportSolution
   {
     my $solution = $_[0];#{VALUES => [{AT...},{AA...},{{AT...}}],STDDEV => ...}
-    #global: @cps
-    #global: @ips
-    #global: $effect_range
+    my $outfile  = $_[1];
+    #globals: @cps, @ips, $effect_range, $use_raw_error, & $header
 
     #Note, we do not need to alter this sub to account for refined solutions
     #because getSolutionExhaustively and getSolutionUsingGA return whole actual
@@ -816,7 +850,8 @@ sub reportSolution
 
     my $output =
       join('',("Effect Range: $effect_range\n",
-	       "Solution Standard Deviation: $solution->{STDDEV}\n",
+	       "Solution Standard Deviation: $solution->{STDDEV}",
+	       ($use_raw_error ? '' : '%'),"\n",
 	       "\tPosition 1:\n",
 	       join("\n",
 		    map {"\t\t$_\t" .
@@ -832,7 +867,31 @@ sub reportSolution
 		    map {"\t\t$_\t" .
 			   (exists($solution->{VALUES}->[2]->{$_}) ?
 			    $solution->{VALUES}->[2]->{$_} : '')} @cps),"\n"));
+
+    if(defined($outfile) && $outfile ne '')
+      {
+	#Open the output file
+	if(!open(OUTPUT,">$outfile"))
+	  {
+	    #Report an error and iterate if there was an error
+	    error("Unable to open output file: [$outfile].\n$!");
+	  }
+	else
+	  {select(OUTPUT)}
+
+	print($header);
+      }
+
     print($output);
+
+    if(defined($outfile) && $outfile ne '')
+      {
+	#Select standard out
+	select(STDOUT);
+	#Close the output file handle
+	close(OUTPUT);
+      }
+
     return($output);
   }
 
@@ -980,13 +1039,15 @@ sub internalCalculateKd
 
 sub getSolutionExhaustively
   {
-    my $cp1s              = [sort {$a cmp $b} @{$_[0]}];
-    my $ips               = [sort {$a cmp $b} @{$_[1]}];
-    my $cp2s              = [sort {$a cmp $b} @{$_[2]}];
-    my $known_kds         = $_[3];#An array of arrays containing [cp1,ip,cp2,kd]
-    my $refine_solution   = $_[4];
-    my $refinement_factor = $_[5];
+    my $cp1s                      = [sort {$a cmp $b} @{$_[0]}];
+    my $ips                       = [sort {$a cmp $b} @{$_[1]}];
+    my $cp2s                      = [sort {$a cmp $b} @{$_[2]}];
+    my $known_kds                 = $_[3];#An array of arrays [[cp1,ip,cp2,kd]]
+    my $refine_solution           = $_[4];
+    my $refinement_factor         = $_[5];
     my $refine_solution_unaltered = $_[6];
+    my $outfile                   = $_[7];
+    #globals: $target_stddev
 
     if(scalar(@$known_kds) < 2)
       {
@@ -996,7 +1057,7 @@ sub getSolutionExhaustively
 
     debug("Called with [@$cp1s], [@$ips], [@$cp2s], and [@$known_kds].");
 
-    #This is not the solution nthat will be returned, but a simpler
+    #This is not the solution that will be returned, but a simpler
     #representation needed for GetNextIndepCombo.  We are going to assume the
     #pairs are ordered by position and then alphabetical
     my $internal_solution = [];
@@ -1133,7 +1194,8 @@ sub getSolutionExhaustively
 					   $cp1s,
 					   $ips,
 					   $cp2s);
-		verbose("Best Solution [with STD DEV $best_stddev]: ",
+		verbose("Best Solution [with STD DEV $best_stddev",
+			($use_raw_error ? '' : '%'),"]: ",
 			join(',',
 			     map {my $x=$_;
 				  map {"$_:$x->{$_}"}
@@ -1143,10 +1205,39 @@ sub getSolutionExhaustively
 	    else
 	      {
 		my $i = 0;
-		verbose("Best Solution [with STD DEV $stddev]: ",
+		verbose("Best Solution [with STD DEV $stddev",
+			($use_raw_error ? '' : '%'),"]: ",
 			join(',',
-			     map {$order[$i++] . ":" . ($_ * $conversion_factor)}
+			     map {$order[$i++] . ":" .
+				    ($_ * $conversion_factor)}
 			     @{$best_internal_solution}));
+	      }
+
+	    reportSolution({VALUES =>
+			    [{map {$order[$i++] => $_ * $conversion_factor}
+			      @{$best_internal_solution}[0..(scalar(@$cp1s) -
+							     1)]},
+			     {map {$order[$i++] => $_ * $conversion_factor}
+			      @{$best_internal_solution}[scalar(@$cp1s)..
+							 (scalar(@$cp1s) +
+							  scalar(@$ips) - 1)]},
+			     {map {$order[$i++] => $_ * $conversion_factor}
+			      @{$best_internal_solution}
+			      [(scalar(@$cp1s) + scalar(@$ips))..
+			       $#{$best_internal_solution}]}],
+			    STDDEV => $best_stddev},
+			   $outfile)
+
+	    if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
+	       $best_stddev <= $target_stddev)
+	      {
+		if($max_seconds != 0 && markTime(-1) > $max_seconds)
+		  {verbose("Hit max time")}
+		else
+		  {verbose("Hit target STDDEV of $target_stddev: ",
+			   "[$best_stddev]")}
+
+		last;
 	      }
 	  }
 
@@ -1241,18 +1332,21 @@ sub mergeRefinements
 
 sub getSolutionUsingGA
   {
-    my $cp1s              = [sort {$a cmp $b} @{$_[0]}];
-    my $ips               = [sort {$a cmp $b} @{$_[1]}];
-    my $cp2s              = [sort {$a cmp $b} @{$_[2]}];
-    my $known_kds         = $_[3];#An array of arrays containing [cp1,ip,cp2,kd]
-    my $refine_solution   = $_[4];
-    my $refinement_factor = $_[5];
+    my $cp1s                      = [sort {$a cmp $b} @{$_[0]}];
+    my $ips                       = [sort {$a cmp $b} @{$_[1]}];
+    my $cp2s                      = [sort {$a cmp $b} @{$_[2]}];
+    my $known_kds                 = $_[3];#An array of arrays [[cp1,ip,cp2,kd]]
+    my $refine_solution           = $_[4];
+    my $refinement_factor         = $_[5];
     my $refine_solution_unaltered = $_[6];
+    my $outfile                   = $_[7];
 
     #globals: $pop_size, $mutation_rate, $crossover_rate, $crossover_amount,
     #         $crossover_cutoff, $max_seconds, $target_stddev, $fitness_factor
     my $target_fitness = ($target_stddev == 0 ?
-			  0 : exp($fitness_factor*(1/$target_stddev)));
+			  0 : 1/$target_stddev);#exp($fitness_factor/$target_stddev));
+
+    debug("TARGET FITNESS: $target_fitness");
 
     if(scalar(@$known_kds) < 2)
       {
@@ -1289,8 +1383,9 @@ sub getSolutionUsingGA
       {
 	my $best_stddev = getStandardDeviation($refine_solution_unaltered,
 					       $known_kds);
-	$best_fitness = exp($fitness_factor*(1/$best_stddev));
-	verbose("Overall Starting Standard Deviation: [$best_stddev]:");
+	$best_fitness = 1/$best_stddev;#exp($fitness_factor*(1/$best_stddev));
+	verbose("Overall Starting Standard Deviation: [$best_stddev",
+		($use_raw_error ? '' : '%'),"]:");
 	verbose(reportSolution($refine_solution)) if($DEBUG);
 	verbose(reportSolution($refine_solution_unaltered)) if($DEBUG);
       }
@@ -1328,8 +1423,8 @@ sub getSolutionUsingGA
     my(@fitnesses,$best_internal_solution,$rand1,$rand2,$sum,$j,
        $mom,$dad,@new_solutions,$population,$total_fitness);
     my $generation_num = 0;
-    while((!defined($best_fitness) || $target_fitness == 0 ||
-	   $best_fitness < $target_fitness))
+    while(!defined($best_fitness) || $target_fitness == 0 ||
+	  $best_fitness < $target_fitness)
       {
 	verboseOverMe("Generation ",++$generation_num,".  Assessing fitness.");
 
@@ -1342,13 +1437,19 @@ sub getSolutionUsingGA
 	  {
 	    #Assign solution fitness exp($fitness_factor*(1/stddev))
 	    push(@fitnesses,
-		 exp($fitness_factor*
-		     (1/getInternalStandardDeviation($internal_solution,
-						     $int_sol_pos_hash,
-						     $known_kds,
-						     $refine_solution,
-						     $refinement_factor))));
+		 (1/
+		 #exp($fitness_factor/
+		     getInternalStandardDeviation($internal_solution,
+						  $int_sol_pos_hash,
+						  $known_kds,
+						  $refine_solution,
+						  $refinement_factor)));
 	    $total_fitness += $fitnesses[-1];
+
+	    debug("FITNESS(",#exp($fitness_factor/STDDEV)
+		  "1/STDDEV",
+		  "): $fitnesses[-1]");
+
 	    #If fitness is better than the best or the best is not yet assigned
 	    if(!defined($best_fitness) || $fitnesses[-1] > $best_fitness)
 	      {
@@ -1356,7 +1457,7 @@ sub getSolutionUsingGA
 		$best_internal_solution = [@$internal_solution];
 		$best_fitness = $fitnesses[-1];
 
-		my $best_stddev = $fitness_factor/(log($best_fitness));
+		my $best_stddev = 1/$best_fitness;#$fitness_factor/log($best_fitness);
 
 		if(defined($refine_solution))
 		  {
@@ -1367,7 +1468,8 @@ sub getSolutionUsingGA
 					       $cp1s,
 					       $ips,
 					       $cp2s);
-		    verbose("Best Solution [with STD DEV $best_stddev]: ",
+		    verbose("Best Solution [with STD DEV $best_stddev",
+			    ($use_raw_error ? '' : '%'),"]: ",
 			    join(',',
 				 map {my $x=$_;
 				      map {"$_:$x->{$_}"}
@@ -1377,20 +1479,56 @@ sub getSolutionUsingGA
 		else
 		  {
 		    my $i = 0;
-		    verbose("Best Solution [with STD DEV $best_stddev]: ",
+		    verbose("Best Solution [with STD DEV $best_stddev",
+			    ($use_raw_error ? '' : '%'),"]: ",
 			    join(',',
-				 map {$order[$i++] . ":" . ($_ * $conversion_factor)}
+				 map {$order[$i++] . ":" .
+					($_ * $conversion_factor)}
 				 @$best_internal_solution));
 		  }
+
+		reportSolution({VALUES =>
+				[{map {$order[$i++] => $_ * $conversion_factor}
+				  @{$best_internal_solution}[0..(scalar(@$cp1s)
+								 - 1)]},
+				 {map {$order[$i++] => $_ * $conversion_factor}
+				  @{$best_internal_solution}[scalar(@$cp1s)..
+							     (scalar(@$cp1s) +
+							      scalar(@$ips) -
+							      1)]},
+				 {map {$order[$i++] => $_ * $conversion_factor}
+				  @{$best_internal_solution}
+				  [(scalar(@$cp1s) + scalar(@$ips))..
+				   $#{$best_internal_solution}]}],
+				STDDEV => $best_stddev},
+			       $outfile)
+
+		last if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
+			($target_fitness != 0 &&
+			 $best_fitness > $target_fitness));
 	      }
+
+	    last if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
+		    ($target_fitness != 0 && $best_fitness > $target_fitness));
 	  }
 
 	debug("Total Fitness: [$total_fitness]  Average Fitness: [",
 	      $total_fitness / scalar(@fitnesses),"].");
 
-	last if($max_seconds != 0 && markTime(-1) > $max_seconds);
+	if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
+	   ($target_fitness != 0 && $best_fitness > $target_fitness))
+	  {
+	    if($max_seconds != 0 && markTime(-1) > $max_seconds)
+	      {verbose("Hit max time")}
+	    else
+	      {verbose("Hit target fitness of $target_fitness: ",
+		       "[$best_fitness]")}
 
-	verboseOverMe("Beginning Natural Selection & Mutations.");
+	    last;
+	  }
+
+	verboseOverMe("Generation $generation_num.  Beginning Natural ",
+		      "Selection & Mutations.");
 
 	#Until the next generation is equal to the population size
 	my @next_generation = ();
@@ -1453,6 +1591,8 @@ sub getSolutionUsingGA
 		push(@$next_generation,$new_solutions[1]);
 	      }
 	  }
+
+	verbose("Generation $generation_num.  Done.");
       }
 
     #Convert the internal solution to a "Real solution" so we can return it
@@ -1485,7 +1625,7 @@ sub getSolutionUsingGA
 				       $#{$best_internal_solution}]}];
       }
 
-    $best_solution->{STDDEV} = $fitness_factor/(log($best_fitness));
+    $best_solution->{STDDEV} = 1/$best_fitness;#$fitness_factor/(log($best_fitness));
 
     return($best_solution);
   }
@@ -1525,13 +1665,16 @@ sub crossover
       {
 	foreach my $position (0..$#{$daughter_solution})
 	  {
-	    #Note, if we are refining a solution, multiplying by $conversion_factor here is OK
-	    #because the internal solution supplied consists of integers from 0
-	    #to 10.  This means that the crossover cutoff will be applied to the
-	    #refined solution based on the refinement factor instead of the
-	    #actual values in the refining solution.  This is what we want.
-	    if(($daughter_solution->[$position] * $conversion_factor >= $crossover_cutoff ||
-		$son_solution->[$position] * $conversion_factor >= $crossover_cutoff) &&
+	    #Note, if we are refining a solution, multiplying by
+	    #$conversion_factor here is OK because the internal solution
+	    #supplied consists of integers from 0 to $rand_input.  This means
+	    #that the crossover cutoff will be applied to the refined solution
+	    #based on the refinement factor instead of the actual values in the
+	    #refining solution.  This is what we want.
+	    if(($daughter_solution->[$position] * $conversion_factor >=
+		$crossover_cutoff ||
+		$son_solution->[$position] * $conversion_factor >=
+		$crossover_cutoff) &&
 	       rand() <= $crossover_amount)
 	      {
 #		debug("Crossing Over.");
@@ -1567,49 +1710,120 @@ sub getInternalStandardDeviation
 
     my $errsum    = 0;
     my $num_calcs = 0;
+    my($err);
 
     foreach my $calculate_kd_array (@$known_kds)
       {
+	debug("KD: $calculate_kd_array->[3]");
+	debug("WEIGHTED KD: ",weightKd($calculate_kd_array->[3]));
+
 	foreach my $known_kd_array (@$known_kds)
 	  {
 	    next if($known_kd_array eq $calculate_kd_array);
 	    $num_calcs++;
-	    $errsum += ($calculate_kd_array->[3] -
-			internalCalculateKd($internal_solution,
-					    $int_sol_pos_hash,
-					    $calculate_kd_array,
-					    $known_kd_array,
-					    $refine_solution,
-					    $refinement_factor))**2;
+	    my $pred_kd =
+	      internalCalculateKd($internal_solution,
+				  $int_sol_pos_hash,
+				  $calculate_kd_array,
+				  $known_kd_array,
+				  $refine_solution,
+				  $refinement_factor);
+	    $err = $calculate_kd_array->[3] - $pred_kd;
+
+	    debug("PREDICTED KD: $pred_kd\nDIFFERENCE: $err");
+
+	    unless($use_raw_error)
+	      {
+		debug("PERCENT DIFFERENCE: ",100*$err/$calculate_kd_array->[3],
+		      '%');
+
+		#Convert the error to a percentage of the known Kd value
+		if($unweighted_kd_mode)
+		  {
+		    #By first dividing by the known Kd
+		    $err /= $calculate_kd_array->[3];
+		  }
+		else
+		  {
+		    #By first dividing by the weighted known Kd
+		    $err /= weightKd($calculate_kd_array->[3]);
+		  }
+
+		#Then by multiplying by 100;
+		$err *= 100;
+
+		debug("WEIGHTED PERCENT DIFFERENCE: $err\%");
+	      }
+
+	    debug("ERROR SQUARED: ",$err**2);
+
+	    $errsum += $err**2;
 	  }
+
+	debug("RUNNING ERROR SUM FOR KD($calculate_kd_array->[3]): $errsum");
       }
+
+    debug("OVERALL STDDEV (sqrt($errsum / $num_calcs)): ",
+	  sqrt($errsum / $num_calcs));
 
     return(sqrt($errsum / $num_calcs));
   }
 
 sub getStandardDeviation
   {
-    my $solution  = $_[0];
-    my $known_kds = $_[1]; #An array of arrays: [[cp1,ip,cp2,kd],,,]
+    my $solution   = $_[0];
+    my $known_kds  = $_[1]; #An array of arrays: [[cp1,ip,cp2,kd],,,]
+    my $calc_array = $_[2]; #OPTIONAL - calculates STDDEV of whole solution if
+                            #           not supplied
 
     my $errsum    = 0;
     my $num_calcs = 0;
+    my($err);
+    #globals: $unweighted_kd_mode
 
-    foreach my $calculate_kd_array (@$known_kds)
+    foreach my $calculate_kd_array (defined($calc_array) ?
+				    $calc_array : @$known_kds)
       {
 	foreach my $known_kd_array (@$known_kds)
 	  {
 	    next if($known_kd_array eq $calculate_kd_array);
 	    $num_calcs++;
-	    $errsum += ($calculate_kd_array->[3] -
-			calculateKd($solution,
-				    $calculate_kd_array,
-				    $known_kd_array,
-				    $known_kd_array->[3]))**2;
+	    $err = $calculate_kd_array->[3] -
+	      calculateKd($solution,
+			  $calculate_kd_array,
+			  $known_kd_array,
+			  $known_kd_array->[3]);
+
+	    unless($use_raw_error)
+	      {
+		#Convert the error to a percentage of the known Kd value
+		if($unweighted_kd_mode)
+		  {
+		    #By first dividing by the known Kd
+		    $err /= $calculate_kd_array->[3];
+		  }
+		else
+		  {
+		    #By first dividing by the weighted known Kd
+		    $err /= weightKd($calculate_kd_array->[3]);
+		  }
+
+		#Then by multiplying by 100;
+		$err *= 100;
+	      }
+
+	    $errsum += $err**2;
 	  }
       }
 
     return(sqrt($errsum / $num_calcs));
+  }
+
+sub weightKd
+  {
+    my $kd = $_[0];
+    #globals: $weight_kd_c,$weight_kd_x,$weight_kd_xsquared
+    return($weight_kd_c + $weight_kd_x * $kd + $weight_kd_xsquared * $kd**2 + $weight_kd_xcubed * $kd**3);
   }
 
 sub copySolution
@@ -1791,6 +2005,7 @@ rwleach\@ccr.buffalo.edu
                 CG,AA,CG	820
                 CG,GG,CG	520
 
+
 * OUTPUT FORMAT: Regular mode example (without using -v):
 
 Effect Range: 472
@@ -1905,6 +2120,8 @@ end_print
       {
         print << 'end_print';
 
+-- BASIC OPTIONS --
+
      -i|--input-file*     REQUIRED Space-separated input file(s inside quotes).
                                    Standard input via redirection is
                                    acceptable.  Perl glob characters (e.g. '*')
@@ -1922,45 +2139,14 @@ end_print
                                    is set to be this plus 20% (to account for
                                    randomness).  If no loops differ by one one
                                    base pair, 500 is the default.
-     -l|--precision-level OPTIONAL [1] An integer greater than 0 that affects
-                                   the number of decimal places in the solution
-                                   factors.  Increasing this number is not
-                                   advisable.  You should add precision by using
-                                   -f, but if on the first pass, you see very
-                                   large standard deviations and an effect range
-                                   that is very large and the increment between
-                                   known Kd's is very small, you might try
-                                   incrementing the precision level *on the
-                                   first pass only*, not on refining solutions.
-                                   Note that this will increase the search
-                                   space, so if you increase the precision
-                                   level, you should also increase the
-                                   population size (-p) and max seconds (-s).
-                                   This parameter is only used if -g is
-                                   supplied.
-     -f|--refine-solution OPTIONAL [nothing] Supply a perviously output solution
-                                   file in the format of the output of this
-                                   script (See OUTPUT FORMAT in --help).  The
-                                   algorithm will add a decimal place to the
-                                   supplied solution to refine it by a decimal
-                                   place.  The smallest decimal place present in
-                                   the supplied solution file is used for all
-                                   the contained factors.  Factors are adjusted
-                                   up or down by half of the next decimal place
-                                   present.  For example, if your current
-                                   factors are in increments of tenths, then the
-                                   refined solution will add facotrs ranging
-                                   from -0.05 to 0.05 (inclusive).  Factors will
-                                   never go below zero or above 1.  This option
-                                   cannot be used with the -v or -r options.
      -v|--cross-validate  OPTIONAL [Off] For each loop in the input file,
                                    calculate the optimized equation based on
                                    the rest of the data, then evaluate whether
                                    the witheld data falls within the calculated
                                    standard deviation.  Cannot be used with the
                                    -f option.
-     -g|--genetic-        OPTIONAL [Off] Search for a solution using a genetic
-        algorithm                 algorithm heuristic.  This strategy will
+     -g|--use-genetic-    OPTIONAL [Off] Search for a solution using a genetic
+        algorithm                  algorithm heuristic.  This strategy will
                                    randomly pick a 'population' of solutions
                                    and then evolve them using the supplied
                                    mutation and crossover rates until the
@@ -1972,55 +2158,6 @@ end_print
                                    solutions will have over others.  The -g
                                    flag is required in order for the following
                                    5 options.  Otherwise, they aren't used.
-     -p|--population-size OPTIONAL [10000] The number of solutions generated
-                                   at each generation.  Only used when the -g
-                                   flag is supplied.
-     -m|--mutation-rate   OPTIONAL [0.005] This is a value between 0 and 1
-                                   (exclusive) that represents the chance that
-                                   each individual importance factor will be
-                                   changed to a different randomly selected
-                                   value.  Only used when the -g flag is
-                                   supplied.
-     -c|--crossover-rate  OPTIONAL [0.7] This is a value between 0 and 1
-                                   (exclusive) that represents the chance that
-                                   two solutions will swap a set of factors for
-                                   one position in the loop.  The set swapped
-                                   is determined by -k and -a (see those
-                                   options below).  Only used when the -g flag
-                                   is supplied.
-     -k|--crossover-      OPTIONAL [0.7] Advanced option - probably should
-        cutoff                     leave the default.  This is a value between
-                                   0 and 1 (exclusive).  It determines which
-                                   'importance factors' (this value and above)
-                                   will be considered for swapping between two
-                                   solutions that were selected by natural
-                                   selection.  Factors are swapped with the
-                                   value in the opposite solution which has a
-                                   matching pair (e.g. AU).  See -a for the
-                                   amount of these factors that will be
-                                   swapped.  Only used when the -g flag is
-                                   supplied.
-     -a|--crossover-      OPTIONAL [0.5] Advanced option - probably should
-        amount                    leave the default.  This is a value between
-                                   0 and 1 (exclusive).  It determines the
-                                   chance an importance factor above the cutoff
-                                   (supplied via -a) will be swapped between
-                                   two solutions selected by natural selection.
-                                   Only used when the -g flag is supplied.
-     -s|--max-seconds     OPTIONAL [3600] The amount of time to spend running
-                                   and optimizing the solution.  Note, when
-                                   used with the -v option, this time applies
-                                   to each of the cross-validation steps, which
-                                   is the same as the number of loops in the
-                                   supplied file.  A value of 0 means that the
-                                   script will run indefinitely until the
-                                   --target-stddev is reached.  Only used when
-                                   the -g flag is supplied.
-     -t|--target-stddev   OPTIONAL [0] If a solution is found with an average
-                                   standard deviation at or below this
-                                   threshold, the program will stop before the
-                                   supplied --max-seconds.  Only used when the
-                                   -g flag is supplied.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
                                    Redirecting a file into this script will
@@ -2056,6 +2193,142 @@ end_print
                                    and command-line information will be printed
                                    at the top of all output files commented
                                    with '#' characters.
+
+-- RUNNING TIME OPTIONS --
+
+     -s|--max-seconds     OPTIONAL [0] The amount of time to spend running and
+                                   optimizing the solution.  Note, when used
+                                   with the -v option, this time applies to
+                                   each of the cross-validation steps, which is
+                                   the same as the number of loops in the
+                                   supplied file.  A value of 0 means that the
+                                   script will run indefinitely until the
+                                   --target-stddev is reached.
+     -t|--target-stddev   OPTIONAL [0] If a solution is found with an average
+                                   standard deviation at or below this
+                                   threshold, the program will stop.  Note that
+                                   this value is a percentage standard
+                                   deviation of the Kd (or weighted Kd unless
+                                   -u is supplied).  If you would like a target
+                                   standard deviation in raw Kd, then you must
+                                   use -e, but note that using that option will
+                                   not focus effort on binders, but rather find
+                                   the best solution for all data with the same
+                                   std-dev.
+
+-- ACCURACY OPTIONS --
+
+     -f|--refine-solution OPTIONAL [nothing] Supply a perviously output
+                                   solution file in the format of the output of
+                                   this script (See OUTPUT FORMAT in --help).
+                                   The algorithm will add a decimal place to
+                                   the supplied solution to refine it by a
+                                   decimal place.  The smallest decimal place
+                                   present in the supplied solution file is
+                                   used for all the contained factors.  Factors
+                                   are adjusted up or down by half of the next
+                                   decimal place present.  For example, if your
+                                   current factors are in increments of tenths,
+                                   then the refined solution will add facotrs
+                                   ranging from -0.05 to 0.05 (inclusive).
+                                   Factors will never go below zero or above 1.
+                                   This option cannot be used with the -v or -r
+                                   options.
+     -l|--precision-level OPTIONAL [1] An integer greater than 0 that affects
+                                   the number of decimal places in the solution
+                                   factors.  Increasing this number is not
+                                   advisable.  You should add precision by
+                                   using -f, but if on the first pass, you see
+                                   very large standard deviations and an effect
+                                   range that is very large and the increment
+                                   between known Kd's is very small, you might
+                                   try incrementing the precision level *on the
+                                   first pass only*, not on refining solutions.
+                                   Note that this will increase the search
+                                   space, so if you increase the precision
+                                   level, you should also increase the
+                                   population size (-p) and max seconds (-s).
+                                   This parameter is only used if -g is
+                                   supplied.
+     -e|--use-raw-error   OPTIONAL [Off] Default behavior is to measure error
+                                   by percentage.  For example, if the
+                                   predicted Kd is 300 and the actual value is
+                                   400, it is off by 25%.  Also, if the
+                                   predicted is 30 and the actual is 40, the
+                                   error is again 25% even though the
+                                   difference is 10 versus 100.  By supplying
+                                   -e, you would be measuring error by the raw
+                                   difference in values (100 versus 10) instead
+                                   of by percentage (25% versus 25%).  So,
+                                   using the default behavior instead causes
+                                   solutions to be more accurate for lower
+                                   Kd's.
+     -u|--use-unweighted- OPTIONAL [Off] Divide the error of predicted Kd's by
+        kd                         the actual known unweighted Kd and measure
+                                   standard deviation of the resulting percent
+                                   value.  E.g. A predicted Kd of 10 for an
+                                   actual Kd of 100 will result in an error
+                                   value of 10%.  If this option is not
+                                   supplied, then the actual known Kd value
+                                   will be weighted by a polynomial which
+                                   promotes accuracy for smaller Kd and relaxes
+                                   accuracy for larger Kd's.  See
+                                   --kd-weight-const, --kd-weight-x-fact, and
+                                   --kd-weight-x-sq-fact.
+     -a|--kd-weight-ax3   OPTIONAL [0.00025] The factor (a) in the Kd weighting
+                                   equation: kd_weighted = aKd^3 + b*Kd^2 +
+                                   c*Kd + d.  See -u for an explanation of the
+                                   effect of weighting the Kd.
+     -b|--kd-weight-bx2   OPTIONAL [0.005] The factor (b) in the Kd weighting
+                                   equation: kd_weighted = aKd^3 + b*Kd^2 +
+                                   c*Kd + d.  See -u for an explanation of the
+                                   effect of weighting the Kd.
+     -c|--kd-weight-cx    OPTIONAL [1.5] The factor (c) in the Kd weighting
+                                   equation: kd_weighted = aKd^3 + b*Kd^2 +
+                                   c*Kd + d.  See -u for an explanation of the
+                                   effect of weighting the Kd.
+     -d|--kd-weight-d     OPTIONAL [200] The constant (d) in the Kd weighting
+                                   equation: kd_weighted = aKd^3 + b*Kd^2 +
+                                   c*Kd + d.  See -u for an explanation of the
+                                   effect of weighting the Kd.
+
+-- GENETIC ALGORITHM OPTIONS --
+
+     -p|--population-size OPTIONAL [10000] The number of solutions generated
+                                   at each generation.  Only used when the -g
+                                   flag is supplied.
+     -m|--mutation-rate   OPTIONAL [0.005] This is a value between 0 and 1
+                                   (exclusive) that represents the chance that
+                                   each individual importance factor will be
+                                   changed to a different randomly selected
+                                   value.  Only used when the -g flag is
+                                   supplied.
+     -x|--crossover-rate  OPTIONAL [0.7] This is a value between 0 and 1
+                                   (exclusive) that represents the chance that
+                                   two solutions will swap a set of factors for
+                                   one position in the loop.  The set swapped
+                                   is determined by -k and -a (see those
+                                   options below).  Only used when the -g flag
+                                   is supplied.
+     --crossover-cutoff   OPTIONAL [0.7] Advanced option - probably should
+                                   leave the default.  This is a value between
+                                   0 and 1 (exclusive).  It determines which
+                                   'importance factors' (this value and above)
+                                   will be considered for swapping between two
+                                   solutions that were selected by natural
+                                   selection.  Factors are swapped with the
+                                   value in the opposite solution which has a
+                                   matching pair (e.g. AU).  See -a for the
+                                   amount of these factors that will be
+                                   swapped.  Only used when the -g flag is
+                                   supplied.
+     --crossover-amount   OPTIONAL [0.5] Advanced option - probably should
+                                   leave the default.  This is a value between
+                                   0 and 1 (exclusive).  It determines the
+                                   chance an importance factor above the cutoff
+                                   (supplied via -a) will be swapped between
+                                   two solutions selected by natural selection.
+                                   Only used when the -g flag is supplied.
 
 end_print
       }
