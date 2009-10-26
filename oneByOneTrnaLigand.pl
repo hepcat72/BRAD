@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.5';
+my $software_version_number = '1.6';
 my $created_on_date         = '8/11/2009';
 
 ##
@@ -19,34 +19,40 @@ use Getopt::Long;
 
 #Declare & initialize variables.  Provide default values here.
 my($outfile_suffix); #Not defined so a user can overwrite the input file
-my @input_files         = ();
-my @refine_files        = ();
-my $current_output_file = '';
-my $help                = 0;
-my $version             = 0;
-my $overwrite           = 0;
-my $noheader            = 0;
-my $ga_flag             = 0;
-my $use_raw_error       = 0;
-my $pop_size            = 10000;
-my $mutation_rate       = .005; #For approx. 1 mutation per 10 sets of 22 vals
-my $crossover_rate      = .7;
-my $crossover_cutoff    = .7;
-my $crossover_amount   = .5;
-my $max_seconds         = 0;   #One hour
-my $target_stddev       = 0;     #Must have stddev <= this number to end early
-my $default_effect_range = 500;
-my $effect_range        = 0;
-my $cross_validate      = 0;
-my @cps                 = ('AU','UA','GC','CG','GU','UG');
-my @ips                 = ('AG','GA','AC','CA','AA','GG','CC','CU','UC','UU');
-my $precision_level     = 1;
-my $fitness_factor      = 100;  #Kludge to enhance fittness of good solutions
-my $unweighted_kd_mode  = 0;
-my $weight_kd_c         = 200;
-my $weight_kd_x         = 1.5;
-my $weight_kd_xsquared  = .005;
-my $weight_kd_xcubed    = .00025;
+my @input_files               = ();
+my @refine_files              = ();
+my $current_output_file       = '';
+my $help                      = 0;
+my $version                   = 0;
+my $overwrite                 = 0;
+my $noheader                  = 0;
+my $ga_flag                   = 0;
+my $use_raw_error             = 0;
+my $pop_size                  = 10000;
+my $mutation_rate             = .005; #For approx. 1 mutation/10 sets of 22 vals
+my $crossover_rate            = .7;
+my $crossover_cutoff          = .7;
+my $crossover_amount          = .5;
+my $max_seconds               = 0; #One hour
+my $target_stddev             = 0; #Must have stddev <= this number to end early
+my $default_effect_range_add  = 500;
+my $default_effect_range_mult = 15;
+my $effect_range              = 0;
+my $calc_effect_range         = 0;
+my $cross_validate            = 0;
+my @cps                       = ('AU','UA','GC','CG','GU','UG');
+my @ips                       = ('AG','GA','AC','CA','AA','GG','CC','CU','UC',
+				 'UU');
+my $precision_level           = 1;
+my $fitness_factor            = 100; #Kludge to enhance fittness of good solns
+my $unweighted_kd_mode        = 0;
+my $weight_kd_c               = 200;
+my $weight_kd_x               = 1.5;
+my $weight_kd_xsquared        = .005;
+my $weight_kd_xcubed          = .00025;
+my $equation_type             = 0;
+
+$| = 1;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, getCommand, quit, and usage
@@ -60,6 +66,7 @@ my $GetOptHash =
   {'r|effect-range=s'      => \$effect_range,           #OPTIONAL [largest diff
 					                #          plus 20% or
 					                #          500]
+   'q|equation-type=s'     => \$equation_type,          #OPTIONAL [0]
    'f|refine-solution=s'   => sub {push(@refine_files,  #OPTIONAL [nothing]
 					sglob($_[1]))},
    'u|use-unweighted-kd!'  => \$unweighted_kd_mode,     #OPTIONAL [Off]
@@ -194,6 +201,8 @@ if($effect_range !~ /^(\d+\.?\d*|\d*\.\d+)$/)
     usage(1);
     quit(-1);
   }
+elsif($effect_range == 0)
+  {$calc_effect_range = 1}
 
 if($pop_size < 2 || $pop_size !~ /^\d+$/)
   {
@@ -280,6 +289,17 @@ if(scalar(@refine_files) && $effect_range != 0)
     quit(-10);
   }
 
+if(scalar(@refine_files) && $equation_type != 0)
+  {
+    warning("Incompatible options selected.  You cannot refine solutions (-f) ",
+	    "with an equation type (-q) selected because solutions contains ",
+	    "an embedded equation type.  We will assume that you know what ",
+	    "you're doing (since you could be using a solution produced by an ",
+	    "earlier version of this script and use the equation type you ",
+	    "provided, but it will be over-written by the value in the ",
+	    "equation/factor file you provided if it is there).");
+  }
+
 if($precision_level !~ /^[1-9]\d*$/)
   {
     error("Invalid precision level (-l): [$precision_level].  It must be a ",
@@ -302,6 +322,30 @@ if($use_raw_error && $unweighted_kd_mode)
 	    "because raw error does not have Kd in the equation.  We will ",
 	    "thus assume -e was supplied by mistake and turn it off for you.");
     $use_raw_error = 0;
+  }
+
+if($equation_type !~ /^\d+$/)
+  {
+    if($equation_type =~ /^(cum|add)/i)
+      {$equation_type = 0}
+    elsif($equation_type =~ /^mult/i)
+      {$equation_type = 1}
+    else
+      {
+	error("Invalid equation type (-q): [$equation_type].  Options are ",
+	      "limited to 'cumulative'/'additive' effect (0) or ",
+	      "'multiplicative' effect (1).  ",
+	      "Defaulting to the cumulative effect equation (0).");
+	$equation_type = 0;
+      }
+  }
+
+if($equation_type != 0 && $equation_type != 1)
+  {
+    error("Invalid equation type (-q): [$equation_type].  Options are limited ",
+	  "to 'cumulative'/'additive' effect (0) or 'multiplicative' ",
+	  "effect (1).  Defaulting to the cumulative effect equation (0).");
+    $equation_type = 0;
   }
 
 verbose('Run conditions: ',getCommand(1));
@@ -333,6 +377,9 @@ foreach my $input_file (@input_files)
     my($refine_file);
     $refine_file = shift(@refine_files) if(scalar(@refine_files));
 
+    if($calc_effect_range)
+      {$effect_range = 0}
+
     #If an output file name suffix has been defined
     if(defined($outfile_suffix))
       {
@@ -356,11 +403,6 @@ foreach my $input_file (@input_files)
 
 	#Select the output file handle
 	select(OUTPUT);
-
-	#Store info. about the run as a comment at the top of the output file
-	#if noheader is not true and we're not in a valid cross-validate mode
-	print($header)
-	  if(!$noheader && (!$cross_validate || scalar(@known_kds) <= 1);
       }
 
     #Open the input file
@@ -384,6 +426,7 @@ foreach my $input_file (@input_files)
     my $best_solution       = [];
     my $diff_by_one         = {};
     my $largest_diff_by_one = 0;
+    my $largest_frac_by_one = 0;
 
     #For each line in the current input file
     while(getLine(*INPUT))
@@ -423,6 +466,10 @@ foreach my $input_file (@input_files)
 	    next;
 	  }
 
+	#Check to see if loop is a non-binder
+	if(!defined($kd) || $kd !~ /^\d+\.?\d*(e\+?\d+)?$/i)
+	  {$kd = 'none'}
+
 	my $pair_errors = '';
 	if(scalar(grep {$_ eq $cp1} @cps) != 1)
 	  {$pair_errors .= "Bad closing-end base pair: [$cp1].  "}
@@ -452,6 +499,9 @@ foreach my $input_file (@input_files)
 	$cp2_hash->{$cp2}++;
 	push(@known_kds,[$cp1,$ip,$cp2,$kd]);
 
+	#Skip the difference calculation if the loop doesn't bind
+	next if($kd eq 'none');
+
 	#Keep track of the largest difference in Kd's between loops that differ
 	#by only one base pair so we can use it to calculate a good effect
 	#range.
@@ -479,8 +529,12 @@ foreach my $input_file (@input_files)
 		if(exists($diff_by_one->{$quar}->{LA}) &&
 		   ($diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM}) >
 		   $largest_diff_by_one)
-		  {$largest_diff_by_one =
-		     $diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM}}
+		  {
+		    $largest_diff_by_one =
+		      $diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM};
+		    $largest_frac_by_one =
+		      $diff_by_one->{$quar}->{LA} / $diff_by_one->{$quar}->{SM};
+		  }
 	      }
 	    else
 	      {$diff_by_one->{$quar}->{SM} = $kd}
@@ -492,17 +546,44 @@ foreach my $input_file (@input_files)
     verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
 	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
 
-    #Set the effect range
+    #Set the effect range based on whether there's a supplied value or if not,
+    #see if the data supports a calculated range (and if so, calculate a range
+    #based on the equation type), else use the default based on the equation
+    #type.
     if($largest_diff_by_one == 0 && $effect_range == 0)
-      {$effect_range = $default_effect_range}
+      {
+	if(!defined($equation_type) || $equation_type == 0)
+	  {$effect_range = $default_effect_range_add}
+	elsif($equation_type == 1)
+	  {$effect_range = $default_effect_range_mult}
+	else
+	  {
+	    error("Invalid equation type: [$equation_type]");
+	    next;
+	  }
+      }
     elsif($effect_range == 0)
-      {$effect_range = $largest_diff_by_one + ($largest_diff_by_one * .2)}
+      {
+	if(!defined($equation_type) || $equation_type == 0)
+	  {$effect_range = $largest_diff_by_one + ($largest_diff_by_one * .2)}
+	elsif($equation_type == 1)
+	  {$effect_range = $largest_frac_by_one + ($largest_frac_by_one * .2)}
+	else
+	  {
+	    error("Invalid equation type: [$equation_type]");
+	    next;
+	  }
+      }
 
     verbose("Effect Range: [$effect_range]");
 
     #Cross-validate if requested and valid
     if($cross_validate && scalar(@known_kds) > 1)
       {
+	#Store info. about the run as a comment at the top of the output file
+	#if noheader is not true and we're not in a valid cross-validate mode
+	print($header) if(!$noheader);
+
 	my $cross_count = 0;
 	foreach my $motif_array (@known_kds)
 	  {
@@ -546,24 +627,9 @@ foreach my $input_file (@input_files)
 					 [keys(%$cp2_hash)],
 					 [grep {$_ ne $motif_array}
 					  @known_kds])}
-#	    reportSolution($solution);
 
 	    my($ccp1,$cip,$ccp2,$target_kd);
 	    ($ccp1,$cip,$ccp2,$target_kd) = @$motif_array;
-#	    my $errsum = 0;
-#
-#	    foreach my $other_motif (grep {$_ ne $motif_array} @known_kds)
-#	      {
-#		my($kcp1,$kip,$kcp2,$known_kd);
-#		($kcp1,$kip,$kcp2,$known_kd) = @$other_motif;
-#		$errsum += ($target_kd -
-#			    calculateKd($solution,
-#					[$ccp1,$cip,$ccp2],
-#					[$kcp1,$kip,$kcp2],
-#					$known_kd))**2;
-#	      }
-#
-#	    my $stddev = sqrt($errsum / (scalar(@known_kds) - 1));
 
 	    my $stddev =
 	      getStandardDeviation($solution,
@@ -599,7 +665,8 @@ foreach my $input_file (@input_files)
 	    #and prepare it so that values are centered around the current ones
 	    if(defined($refine_solution))
 	      {
-		$effect_range = $refine_solution->{EFFECT};
+		$effect_range  = $refine_solution->{EFFECT};
+		$equation_type = $refine_solution->{TYPE};
 
 		my $max_places = 0;
 		foreach my $valhash (@{$refine_solution->{VALUES}})
@@ -658,7 +725,6 @@ foreach my $input_file (@input_files)
 				     $refinement_factor,
 				     $refine_solution_unaltered,
 				     $current_output_file)}
-#	reportSolution($solution);
       }
 
     #If an output file name suffix is set
@@ -716,6 +782,7 @@ if(!$quiet && ($verbose                     ||
 sub getFactorHash
   {
     my $input_file = $_[0];
+    #globals: $effect_range, $equation_type
 
     #Open the input file
     if(!open(INPUT,$input_file))
@@ -764,6 +831,17 @@ sub getFactorHash
 	      }
 	    $solution->{EFFECT} = $1;
 	  }
+	elsif(/Equation Type: (\S+)/)
+	  {
+	    if(exists($solution->{TYPE}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{TYPE} = $1;
+	  }
 	elsif(/^\tPosition \d+:$/)
 	  {push(@{$solution->{VALUES}},{})}
 	elsif(/^\t\t(\S+)\t?(\S*)$/)
@@ -795,12 +873,17 @@ sub getFactorHash
     verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
 	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
 
-    if(scalar(keys(%$solution)) != 3)
+    if(scalar(keys(%$solution)) < 2)
       {
 	error("Invalid or no solution parsed from file [$input_file].  ",
 	      "Skipping.");
 	return({});
       }
+
+    if(!exists($solution->{EFFECT}))
+      {$solution->{EFFECT} = $effect_range}
+    if(!exists($solution->{TYPE}))
+      {$solution->{TYPE}   = $equation_type}
 
     if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+)$/)
       {warning("invalid standard deviation found in file [$input_file]: ",
@@ -842,14 +925,21 @@ sub reportSolution
   {
     my $solution = $_[0];#{VALUES => [{AT...},{AA...},{{AT...}}],STDDEV => ...}
     my $outfile  = $_[1];
-    #globals: @cps, @ips, $effect_range, $use_raw_error, & $header
+    #globals: @cps, @ips, $effect_range, $use_raw_error, $equation_type, &
+    #$header
+
+    #This is for backwards compatibility
+    my $et = (exists($solution->{TYPE}) ? $solution->{TYPE} : $equation_type);
+    my $er = (exists($solution->{EFFECT}) ?
+	      $solution->{EFFECT} : $effect_range);
 
     #Note, we do not need to alter this sub to account for refined solutions
     #because getSolutionExhaustively and getSolutionUsingGA return whole actual
     #refined solutions
 
     my $output =
-      join('',("Effect Range: $effect_range\n",
+      join('',("Equation Type: $et\n",
+	       "Effect Range: $er\n",
 	       "Solution Standard Deviation: $solution->{STDDEV}",
 	       ($use_raw_error ? '' : '%'),"\n",
 	       "\tPosition 1:\n",
@@ -887,7 +977,7 @@ sub reportSolution
     if(defined($outfile) && $outfile ne '')
       {
 	#Select standard out
-	select(STDOUT);
+       select(STDOUT);
 	#Close the output file handle
 	close(OUTPUT);
       }
@@ -901,7 +991,20 @@ sub calculateKd
     my $calculate_motif = $_[1];
     my $known_motif     = $_[2];
     my $known_kd        = $_[3];
-    #global: $effect_range
+    my $kd = $known_kd;
+
+    if(!exists($solution->{EFFECT}))
+      {
+	error("No effect-range was in the provided solution.");
+	return($kd);
+      }
+
+    if(scalar(@{$solution->{VALUES}}) != scalar(@$calculate_motif) &&
+       scalar(@{$solution->{VALUES}}) != (scalar(@$calculate_motif) - 1) &&
+       scalar(@{$solution->{VALUES}}) != scalar(@$known_motif) &&
+       scalar(@{$solution->{VALUES}}) != (scalar(@$known_motif) - 1))
+      {error("Motifs are not all the same size.")}
+
 
     #Note, we do not need to alter this sub to account for refined solutions
     #because getSolutionExhaustively and getSolutionUsingGA return whole actual
@@ -909,116 +1012,264 @@ sub calculateKd
     #See internalCalculateKd to merge a refining solution and the refined
     #internal solution factors
 
-    my $kd = $known_kd;
-    debug("Position 1: $calculate_motif->[0]_c vs. $known_motif->[0]_k");
-    $kd += $effect_range *
-      ((exists($solution->{VALUES}->[0]->{$calculate_motif->[0]}) ?
-	$solution->{VALUES}->[0]->{$calculate_motif->[0]} : 0) -
-       (exists($solution->{VALUES}->[0]->{$known_motif->[0]}) ?
-	$solution->{VALUES}->[0]->{$known_motif->[0]} : 0));
+    if(!exists($solution->{TYPE}) || $solution->{TYPE} == 0)
+      {
+	foreach my $p (0..$#{$solution->{VALUES}})
+	  {
+	    if($calculate_motif->[$p] !~ /^[A-Z]{2}$/i ||
+	       $known_motif->[$p]     !~ /^[A-Z]{2}$/i)
+	      {
+		error("Expected 2 base pairs, but got: ",
+		      "[$calculate_motif->[$p] and $known_motif->[$p]]");
+		next;
+	      }
 
-    debug("Position 2: $calculate_motif->[1]_c vs. $known_motif->[1]_k");
-    $kd += $effect_range *
-       ((exists($solution->{VALUES}->[1]->{$calculate_motif->[1]}) ?
-	 $solution->{VALUES}->[1]->{$calculate_motif->[1]} : 0) -
-	(exists($solution->{VALUES}->[1]->{$known_motif->[1]}) ?
-	 $solution->{VALUES}->[1]->{$known_motif->[1]} : 0));
+	    debug("Position ",($p+1),
+		  ": $calculate_motif->[$p]_c vs. $known_motif->[$p]_k");
 
-    debug("Position 3: $calculate_motif->[2]_c vs. $known_motif->[2]_k");
-    $kd += $effect_range *
-      ((exists($solution->{VALUES}->[2]->{$calculate_motif->[2]}) ?
-	$solution->{VALUES}->[2]->{$calculate_motif->[2]} : 0) -
-       (exists($solution->{VALUES}->[2]->{$known_motif->[2]}) ?
-	$solution->{VALUES}->[2]->{$known_motif->[2]} : 0));
+	    $kd += $solution->{EFFECT} *
+
+	      ((exists($solution->{VALUES}->[$p]->{$calculate_motif->[$p]}) ?
+		$solution->{VALUES}->[$p]->{$calculate_motif->[$p]} : 0) -
+
+	       (exists($solution->{VALUES}->[$p]->{$known_motif->[$p]}) ?
+		$solution->{VALUES}->[$p]->{$known_motif->[$p]} : 0));
+	  }
+      }
+    elsif($solution->{TYPE} == 1)
+      {
+	foreach my $p (0..$#{$solution->{VALUES}})
+	  {
+	    if($calculate_motif->[$p] !~ /^[A-Z]{2}$/i ||
+	       $known_motif->[$p]     !~ /^[A-Z]{2}$/i)
+	      {
+		error("Expected 2 base pairs, but got: ",
+		      "[$calculate_motif->[$p] and $known_motif->[$p]]");
+		next;
+	      }
+
+	    debug("Position ",($p+1),
+		  ": $calculate_motif->[$p]_c vs. $known_motif->[$p]_k");
+
+	    $kd *=
+
+	      (($solution->{EFFECT} - 1) *
+	       (exists($solution->{VALUES}->[$p]->{$calculate_motif->[$p]}) ?
+		$solution->{VALUES}->[$p]->{$calculate_motif->[$p]} : 0) + 1) /
+
+		  (($solution->{EFFECT} - 1) *
+		   (exists($solution->{VALUES}->[$p]->{$known_motif->[$p]}) ?
+		    $solution->{VALUES}->[$p]->{$known_motif->[$p]} : 0) + 1);
+	  }
+      }
+    else
+      {error("Invalid equation type: [$solution->{TYPE}].")}
 
     return($kd);
   }
 
 sub internalCalculateKd
   {
-    my $solution          = $_[0]; #{VALUES => [{AT...},{AA...},{{AT...}}]}
-    my $int_sol_pos_hash  = $_[1];
+    my $solution          = $_[0]; #[pos1factor,pos2factor,pos3factor,...]
+    my $int_sol_pos_hash  = $_[1]; #{1=>{AU=>pos1,CG=>pos2,...},
+                                   # 2=>{AA=>pos7,...},
+                                   # ...}
     my $calculate_motif   = $_[2];
     my $known_motif       = $_[3];
     my $refine_solution   = $_[4];
     my $refinement_factor = $_[5];
-    #global: $effect_range
+    my $kd                = $known_motif->[3];
+    #global: $effect_range, $equation_type
 
-    my $kd = $known_motif->[3];
+    if(scalar(@$calculate_motif) != scalar(@$known_motif))
+      {error("Motifs are not all the same size.")}
+
     if(defined($refine_solution))
       {
+	#Cursory check on the solution sizes - should do something more precise
+	if(scalar(@{$refine_solution->{VALUES}}) != scalar(@$calculate_motif) &&
+	   scalar(@{$refine_solution->{VALUES}}) != (scalar(@$calculate_motif) -
+						     1) &&
+	   scalar(@{$refine_solution->{VALUES}}) != scalar(@$known_motif) &&
+	   scalar(@{$refine_solution->{VALUES}}) != (scalar(@$known_motif) - 1))
+	  {error("Motifs are not all the same size.")}
+
+	#This is for backwards compatibility
+	my $et = (exists($refine_solution->{TYPE}) ?
+		  $refine_solution->{TYPE} : $equation_type);
+	my $er = (exists($refine_solution->{EFFECT}) ?
+		  $refine_solution->{EFFECT} : $effect_range);
+
 	#Each factor in the existing refining solution must have a value added
 	#to it consisting of the refinement factor times the random value in the
 	#internal solution
 
-	my $c1 = (exists($refine_solution->{VALUES}->[0]
-			 ->{$calculate_motif->[0]}) ?
-		  $refine_solution->{VALUES}->[0]->{$calculate_motif->[0]} :
-		  0) +
-		    (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
-		     $solution->[$int_sol_pos_hash->{1}
-				 ->{$calculate_motif->[0]}] *
-		     $refinement_factor : 0);
-	my $k1 = (exists($refine_solution->{VALUES}->[0]->{$known_motif->[0]}) ?
-		  $refine_solution->{VALUES}->[0]->{$known_motif->[0]} : 0) +
-		    (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
-		     $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
-		     $refinement_factor : 0);
-	my $c2 = (exists($refine_solution->{VALUES}->[1]
-			 ->{$calculate_motif->[1]}) ?
-		  $refine_solution->{VALUES}->[1]->{$calculate_motif->[1]} :
-		  0) +
-		    (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
-		     $solution->[$int_sol_pos_hash->{2}
-				 ->{$calculate_motif->[1]}] *
-		     $refinement_factor : 0);
-	my $k2 = (exists($refine_solution->{VALUES}->[1]->{$known_motif->[1]}) ?
-		  $refine_solution->{VALUES}->[1]->{$known_motif->[1]} : 0) +
-		    (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
-		     $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
-		     $refinement_factor : 0);
-	my $c3 = (exists($refine_solution->{VALUES}->[2]
-			 ->{$calculate_motif->[2]}) ?
-		  $refine_solution->{VALUES}->[2]->{$calculate_motif->[2]} :
-		  0) +
-		    (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
-		     $solution->[$int_sol_pos_hash->{3}
-				 ->{$calculate_motif->[2]}] *
-		     $refinement_factor : 0);
-	my $k3 = (exists($refine_solution->{VALUES}->[2]->{$known_motif->[2]}) ?
-		  $refine_solution->{VALUES}->[2]->{$known_motif->[2]} : 0) +
-		    (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
-		     $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
-		     $refinement_factor : 0);
+	foreach my $p (0..$#{$refine_solution->{VALUES}})
+	  {
+	    #Make sure the loops as large as the refine solution
+	    if($calculate_motif->[$p] !~ /^[A-Z]{2}$/i ||
+	       $known_motif->[$p]     !~ /^[A-Z]{2}$/i)
+	      {
+		error("Expected 2 base pairs, but got: ",
+		      "[$calculate_motif->[$p] and $known_motif->[$p]]");
+		next;
+	      }
 
-	$kd += $effect_range * ($c1 - $k1);
-	$kd += $effect_range * ($c2 - $k2);
-	$kd += $effect_range * ($c3 - $k3);
+	    #Make sure we don't go outside the bounds of the internal solution
+	    if((exists($int_sol_pos_hash->{$p+1}->{$calculate_motif->[$p]}) &&
+		$int_sol_pos_hash->{$p+1}->{$calculate_motif->[$p]} >=
+		scalar(@$solution)) ||
+	       (exists($int_sol_pos_hash->{$p+1}->{$known_motif->[$p]}) &&
+		$int_sol_pos_hash->{$p+1}->{$known_motif->[$p]} >=
+		scalar(@$solution)))
+	      {
+		error("Position in hash does not exist in internal solution.");
+		next;
+	      }
+
+	    debug("Position ",($p+1),
+		  ": $calculate_motif->[$p]_c vs. $known_motif->[$p]_k");
+
+	    my $c = (exists($refine_solution->{VALUES}->[$p]
+			    ->{$calculate_motif->[$p]}) ?
+		     $refine_solution->{VALUES}->[$p]
+		     ->{$calculate_motif->[$p]} : 0) +
+		       (exists($int_sol_pos_hash->{$p+1}
+			       ->{$calculate_motif->[$p]}) ?
+			$solution->[$int_sol_pos_hash->{$p+1}
+				    ->{$calculate_motif->[$p]}] *
+			$refinement_factor : 0);
+	    my $k = (exists($refine_solution->{VALUES}->[$p]
+			    ->{$known_motif->[$p]}) ?
+		     $refine_solution->{VALUES}->[$p]->{$known_motif->[$p]} :
+		     0) +
+		       (exists($int_sol_pos_hash->{$p+1}
+			       ->{$known_motif->[$p]}) ?
+			$solution->[$int_sol_pos_hash->{$p+1}
+				    ->{$known_motif->[$p]}] *
+			$refinement_factor : 0);
+
+	    if(!defined($et) || $et == 0)
+	      {$kd += $er * ($c - $k)}
+	    elsif($et == 1)
+	      {$kd *= ((($er - 1) * $c + 1) / (($er - 1) * $k + 1))}
+	    else
+	      {error("Invalid equation type: [$et].")}
+	  }
+
+#	my $c1 = (exists($refine_solution->{VALUES}->[0]
+#			 ->{$calculate_motif->[0]}) ?
+#		  $refine_solution->{VALUES}->[0]->{$calculate_motif->[0]} :
+#		  0) +
+#		    (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
+#		     $solution->[$int_sol_pos_hash->{1}
+#				 ->{$calculate_motif->[0]}] *
+#		     $refinement_factor : 0);
+#	my $k1 = (exists($refine_solution->{VALUES}->[0]->{$known_motif->[0]}) ?
+#		  $refine_solution->{VALUES}->[0]->{$known_motif->[0]} : 0) +
+#		    (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
+#		     $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
+#		     $refinement_factor : 0);
+#	my $c2 = (exists($refine_solution->{VALUES}->[1]
+#			 ->{$calculate_motif->[1]}) ?
+#		  $refine_solution->{VALUES}->[1]->{$calculate_motif->[1]} :
+#		  0) +
+#		    (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
+#		     $solution->[$int_sol_pos_hash->{2}
+#				 ->{$calculate_motif->[1]}] *
+#		     $refinement_factor : 0);
+#	my $k2 = (exists($refine_solution->{VALUES}->[1]->{$known_motif->[1]}) ?
+#		  $refine_solution->{VALUES}->[1]->{$known_motif->[1]} : 0) +
+#		    (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
+#		     $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
+#		     $refinement_factor : 0);
+#	my $c3 = (exists($refine_solution->{VALUES}->[2]
+#			 ->{$calculate_motif->[2]}) ?
+#		  $refine_solution->{VALUES}->[2]->{$calculate_motif->[2]} :
+#		  0) +
+#		    (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
+#		     $solution->[$int_sol_pos_hash->{3}
+#				 ->{$calculate_motif->[2]}] *
+#		     $refinement_factor : 0);
+#	my $k3 = (exists($refine_solution->{VALUES}->[2]->{$known_motif->[2]}) ?
+#		  $refine_solution->{VALUES}->[2]->{$known_motif->[2]} : 0) +
+#		    (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
+#		     $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
+#		     $refinement_factor : 0);
+#
+#	$kd += $er * ($c1 - $k1);
+#	$kd += $er * ($c2 - $k2);
+#	$kd += $er * ($c3 - $k3);
       }
     else
       {
-	my $c1 = (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
-		  $solution->[$int_sol_pos_hash->{1}->{$calculate_motif->[0]}] *
-		  $conversion_factor : 0);
-	my $k1 = (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
-		  $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
-		  $conversion_factor : 0);
-	my $c2 = (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
-		  $solution->[$int_sol_pos_hash->{2}->{$calculate_motif->[1]}] *
-		  $conversion_factor : 0);
-	my $k2 = (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
-		  $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
-		  $conversion_factor : 0);
-	my $c3 = (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
-		  $solution->[$int_sol_pos_hash->{3}->{$calculate_motif->[2]}] *
-		  $conversion_factor : 0);
-	my $k3 = (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
-		  $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
-		  $conversion_factor : 0);
+	foreach my $p (0..($#{$known_motif} - 1))
+	  {
+	    #Make sure the calculate loop is as large as the known loop
+	    if($calculate_motif->[$p] !~ /^[A-Z]{2}$/i ||
+	       $known_motif->[$p]     !~ /^[A-Z]{2}$/i)
+	      {
+		error("Expected 2 base pairs, but got: ",
+		      "[$calculate_motif->[$p] and $known_motif->[$p]]");
+		next;
+	      }
 
-	$kd += $effect_range * ($c1 - $k1);
-	$kd += $effect_range * ($c2 - $k2);
-	$kd += $effect_range * ($c3 - $k3);
+	    #Make sure we don't go outside the bounds of the internal solution
+	    if((exists($int_sol_pos_hash->{$p+1}->{$calculate_motif->[$p]}) &&
+		$int_sol_pos_hash->{$p+1}->{$calculate_motif->[$p]} >=
+		scalar(@$solution)) ||
+	       (exists($int_sol_pos_hash->{$p+1}->{$known_motif->[$p]}) &&
+		$int_sol_pos_hash->{$p+1}->{$known_motif->[$p]} >=
+		scalar(@$solution)))
+	      {
+		error("Position in hash does not exist in internal solution.");
+		next;
+	      }
+
+	    debug("Position ",($p+1),
+		  ": $calculate_motif->[$p]_c vs. $known_motif->[$p]_k");
+
+	    my $c =
+	      (exists($int_sol_pos_hash->{$p+1}->{$calculate_motif->[$p]}) ?
+	       $solution->[$int_sol_pos_hash->{$p+1}
+			   ->{$calculate_motif->[$p]}] *
+	       $conversion_factor : 0);
+	    my $k =
+	      (exists($int_sol_pos_hash->{$p+1}->{$known_motif->[$p]}) ?
+	       $solution->[$int_sol_pos_hash->{$p+1}->{$known_motif->[$p]}] *
+	       $conversion_factor : 0);
+
+	    if(!defined($equation_type) || $equation_type == 0)
+	      {$kd += $effect_range * ($c - $k)}
+	    elsif($equation_type == 1)
+	      {$kd *= ((($effect_range - 1) * $c + 1) /
+		       (($effect_range - 1) * $k + 1))}
+	    else
+	      {error("Invalid equation type: [$equation_type].")}
+	  }
+
+#	my $c1 = (exists($int_sol_pos_hash->{1}->{$calculate_motif->[0]}) ?
+#		  $solution->[$int_sol_pos_hash->{1}->{$calculate_motif->[0]}] *
+#		  $conversion_factor : 0);
+#	my $k1 = (exists($int_sol_pos_hash->{1}->{$known_motif->[0]}) ?
+#		  $solution->[$int_sol_pos_hash->{1}->{$known_motif->[0]}] *
+#		  $conversion_factor : 0);
+#	my $c2 = (exists($int_sol_pos_hash->{2}->{$calculate_motif->[1]}) ?
+#		  $solution->[$int_sol_pos_hash->{2}->{$calculate_motif->[1]}] *
+#		  $conversion_factor : 0);
+#	my $k2 = (exists($int_sol_pos_hash->{2}->{$known_motif->[1]}) ?
+#		  $solution->[$int_sol_pos_hash->{2}->{$known_motif->[1]}] *
+#		  $conversion_factor : 0);
+#	my $c3 = (exists($int_sol_pos_hash->{3}->{$calculate_motif->[2]}) ?
+#		  $solution->[$int_sol_pos_hash->{3}->{$calculate_motif->[2]}] *
+#		  $conversion_factor : 0);
+#	my $k3 = (exists($int_sol_pos_hash->{3}->{$known_motif->[2]}) ?
+#		  $solution->[$int_sol_pos_hash->{3}->{$known_motif->[2]}] *
+#		  $conversion_factor : 0);
+#
+#	$kd += $effect_range * ($c1 - $k1);
+#	$kd += $effect_range * ($c2 - $k2);
+#	$kd += $effect_range * ($c3 - $k3);
 
 ##    debug("Position 1: $calculate_motif->[0]_c vs. $known_motif->[0]_k");
 #	$kd += $effect_range *
@@ -1047,7 +1298,7 @@ sub getSolutionExhaustively
     my $refinement_factor         = $_[5];
     my $refine_solution_unaltered = $_[6];
     my $outfile                   = $_[7];
-    #globals: $target_stddev
+    #globals: $target_stddev, $equation_type, $effect_range
 
     if(scalar(@$known_kds) < 2)
       {
@@ -1069,7 +1320,6 @@ sub getSolutionExhaustively
     my $num_poss = $rand_input**scalar(@order);
     my($ccp1,$cip,$ccp2,$target_kd);
     my($kcp1,$kip,$kcp2,$known_kd);
-#    my $real_solution    = {};
     my $best_solution    = {};
     my $array_sizes      = [map {$rand_input} @order];
     my $stddev           = 0;
@@ -1105,85 +1355,19 @@ sub getSolutionExhaustively
       {
 	$cnt++;
 
-#	my $i = 0;
-
-#	if($DEBUG) #Doing it this way saves computation time...
-#	  {
-#	    my $i = 0;
-#	    debug("Position 1: [",
-#		  join(',',map {$order[$i++],$_ * .1}
-#		       @{$internal_solution}[0..(scalar(@$cp1s) - 1)]),"].");
-#	    debug("Position 2: [",
-#		  join(',',map {$order[$i++],$_ * .1}
-#		       @{$internal_solution}[scalar(@$cp1s)..
-#					     (scalar(@$cp1s) +
-#					      scalar(@$ips) - 1)]),"].");
-#	    debug("Position 3: [",
-#		  join(',',map {$order[$i++],$_ * .1}
-#		       @{$internal_solution}[(scalar(@$cp1s) +
-#					      scalar(@$ips))..
-#					     $#{$internal_solution}]),"].");
-#
-#	    $i = 0;
-#	  }
-
-	#$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
-#	$real_solution->{VALUES} =
-#	  [{map {$order[$i++] => $_ * .1}
-#	    @{$internal_solution}[0..(scalar(@$cp1s) - 1)]},
-#	   {map {$order[$i++] => $_ * .1}
-#	    @{$internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
-#						   scalar(@$ips) - 1)]},
-#	   {map {$order[$i++] => $_ * .1}
-#	    @{$internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
-#				  $#{$internal_solution}]}];
-#	reportSolution($real_solution) if($DEBUG);
-#	$errsum = 0;
-#	$num_calcs = 0;
-#
-#	foreach my $calculate_kd_array (@$known_kds)
-#	  {
-#	    ($ccp1,$cip,$ccp2,$target_kd) = @$calculate_kd_array;
-#
-#	    debug("Calculating [$ccp1,$cip,$ccp2].");
-#
-#	    foreach my $known_kd_array (@$known_kds)
-#	      {
-#		next if($known_kd_array eq $calculate_kd_array);
-#		$num_calcs++;
-#		($kcp1,$kip,$kcp2,$known_kd) = @$known_kd_array;
-#		$errsum += abs($target_kd -
-#			       calculateKd($real_solution,
-#					   [$ccp1,$cip,$ccp2],
-#					   [$kcp1,$kip,$kcp2],
-#					   $known_kd));
-#		$errsum += ($calculate_kd_array->[3] -
-#			    internalCalculateKd($internal_solution,
-#						$int_sol_pos_hash,
-#						$calculate_kd_array,
-#						$known_kd_array,
-#					        $refine_solution,
-#					        $refinement_factor))**2;
-#	      }
-#	  }
-
-#	$real_solution->{STDDEV} = $errsum / $num_calcs;
-#	$stddev = sqrt($errsum / $num_calcs);
-
 	$stddev = getInternalStandardDeviation($internal_solution,
 					       $int_sol_pos_hash,
 					       $known_kds,
 					       $refine_solution,
 					       $refinement_factor);
 
-	#Copy the solution to the best solution if it has a smaller STDDEV
-#	if(!exists($best_solution->{STDDEV}) ||
-#	   $real_solution->{STDDEV} < $best_solution->{STDDEV})
-#	  {$best_solution = copySolution($real_solution)}
+	#If we've encountered a better solution
 	if(!defined($best_stddev) || $stddev < $best_stddev)
 	  {
 	    $best_stddev            = $stddev;
 	    $best_internal_solution = [@$internal_solution];
+
+	    my $i = 0;
 
 	    if(defined($refine_solution))
 	      {
@@ -1204,7 +1388,7 @@ sub getSolutionExhaustively
 	      }
 	    else
 	      {
-		my $i = 0;
+		$i = 0;
 		verbose("Best Solution [with STD DEV $stddev",
 			($use_raw_error ? '' : '%'),"]: ",
 			join(',',
@@ -1213,6 +1397,7 @@ sub getSolutionExhaustively
 			     @{$best_internal_solution}));
 	      }
 
+	    $i = 0;
 	    reportSolution({VALUES =>
 			    [{map {$order[$i++] => $_ * $conversion_factor}
 			      @{$best_internal_solution}[0..(scalar(@$cp1s) -
@@ -1225,8 +1410,10 @@ sub getSolutionExhaustively
 			      @{$best_internal_solution}
 			      [(scalar(@$cp1s) + scalar(@$ips))..
 			       $#{$best_internal_solution}]}],
-			    STDDEV => $best_stddev},
-			   $outfile)
+			    STDDEV => $best_stddev,
+			    EFFECT => $effect_range,
+			    TYPE   => $equation_type},
+			   $outfile);
 
 	    if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
 	       $best_stddev <= $target_stddev)
@@ -1262,22 +1449,6 @@ sub getSolutionExhaustively
 						    $cp1s,
 						    $ips,
 						    $cp2s);
-#	#$solution->{VALUES} = [{AT => ...},{AA => ...},{AT => ...}]
-#	$best_solution->{VALUES} =
-#	  [{map {my $j = $i++;$order[$j] =>
-#		   $refine_solution->{VALUES}->[0]->{$order[$j]} +
-#		     ($_ * $refinement_factor)}
-#	    @{$best_internal_solution}[0..(scalar(@$cp1s) - 1)]},
-#	   {map {my $j = $i++;$order[$j] =>
-#		   $refine_solution->{VALUES}->[1]->{$order[$j]} +
-#		     ($_ * $refinement_factor)}
-#	    @{$best_internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) +
-#							scalar(@$ips) - 1)]},
-#	   {map {my $j = $i++;$order[$j] =>
-#		   $refine_solution->{VALUES}->[2]->{$order[$j]} +
-#		     ($_ * $refinement_factor)}
-#	    @{$best_internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
-#				       $#{$best_internal_solution}]}];
       }
     else
       {
@@ -1296,6 +1467,8 @@ sub getSolutionExhaustively
       }
 
     $best_solution->{STDDEV} = $best_stddev;
+    $best_solution->{EFFECT} = $effect_range;
+    $best_solution->{TYPE}   = $equation_type;
 
     return($best_solution);
   }
@@ -1340,9 +1513,9 @@ sub getSolutionUsingGA
     my $refinement_factor         = $_[5];
     my $refine_solution_unaltered = $_[6];
     my $outfile                   = $_[7];
-
     #globals: $pop_size, $mutation_rate, $crossover_rate, $crossover_amount,
     #         $crossover_cutoff, $max_seconds, $target_stddev, $fitness_factor
+
     my $target_fitness = ($target_stddev == 0 ?
 			  0 : 1/$target_stddev);#exp($fitness_factor/$target_stddev));
 
@@ -1459,6 +1632,8 @@ sub getSolutionUsingGA
 
 		my $best_stddev = 1/$best_fitness;#$fitness_factor/log($best_fitness);
 
+		my $i = 0;
+
 		if(defined($refine_solution))
 		  {
 		    my $ary = mergeRefinements($refine_solution->{VALUES},
@@ -1478,7 +1653,7 @@ sub getSolutionUsingGA
 		  }
 		else
 		  {
-		    my $i = 0;
+		    $i = 0;
 		    verbose("Best Solution [with STD DEV $best_stddev",
 			    ($use_raw_error ? '' : '%'),"]: ",
 			    join(',',
@@ -1487,6 +1662,7 @@ sub getSolutionUsingGA
 				 @$best_internal_solution));
 		  }
 
+		$i = 0;
 		reportSolution({VALUES =>
 				[{map {$order[$i++] => $_ * $conversion_factor}
 				  @{$best_internal_solution}[0..(scalar(@$cp1s)
@@ -1500,8 +1676,10 @@ sub getSolutionUsingGA
 				  @{$best_internal_solution}
 				  [(scalar(@$cp1s) + scalar(@$ips))..
 				   $#{$best_internal_solution}]}],
-				STDDEV => $best_stddev},
-			       $outfile)
+				STDDEV => $best_stddev,
+				EFFECT => $effect_range,
+				TYPE   => $equation_type},
+			       $outfile);
 
 		last if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
 			($target_fitness != 0 &&
@@ -1626,6 +1804,8 @@ sub getSolutionUsingGA
       }
 
     $best_solution->{STDDEV} = 1/$best_fitness;#$fitness_factor/(log($best_fitness));
+    $best_solution->{EFFECT} = $effect_range;
+    $best_solution->{TYPE}   = $equation_type;
 
     return($best_solution);
   }
@@ -1822,8 +2002,11 @@ sub getStandardDeviation
 sub weightKd
   {
     my $kd = $_[0];
-    #globals: $weight_kd_c,$weight_kd_x,$weight_kd_xsquared
-    return($weight_kd_c + $weight_kd_x * $kd + $weight_kd_xsquared * $kd**2 + $weight_kd_xcubed * $kd**3);
+    #globals: $weight_kd_c,$weight_kd_x,$weight_kd_xsquared,$weight_kd_xcubed
+    return($weight_kd_c +
+	   $weight_kd_x * $kd +
+	   $weight_kd_xsquared * $kd**2 +
+	   $weight_kd_xcubed * $kd**3);
   }
 
 sub copySolution
@@ -1833,6 +2016,8 @@ sub copySolution
 		STDDEV => $solution->{STDDEV}};
     if(exists($solution->{EFFECT}))
       {$copy->{EFFECT} = $solution->{EFFECT}}
+    if(exists($solution->{TYPE}))
+      {$copy->{TYPE} = $solution->{TYPE}}
     return($copy);
   }
 
@@ -2129,16 +2314,90 @@ end_print
                                    -i "*.txt *.text").  See --help for a
                                    description of the input file format.
                                    *No flag required.
-     -r|--effect-range    OPTIONAL [500*] The maximum difference in Kd
-                                   observed when loops differ by only one base
-                                   pair (including one closing base pair on
-                                   each end).  Cannot be used with the -f
-                                   option.  *The largest difference between
-                                   loops which differ by one base pair is
-                                   automatically detected and the effect range
-                                   is set to be this plus 20% (to account for
-                                   randomness).  If no loops differ by one one
-                                   base pair, 500 is the default.
+     -q|--equation-type   OPTIONAL [0] Values can be 'additive' ('cumulative' or
+                                   '0' will work for this too) or
+                                   'multiplicative' ('1' will work for this as
+                                   well).  The first additive option adds the
+                                   effect range multiplied by the difference
+                                   between the optimized factors (factors are
+                                   values between [0 and 1], inclusive).  The
+                                   factor for the base pair in the loop with
+                                   known Kd is subtracted from the factor for
+                                   the base pair in the loop whose Kd is being
+                                   predicted and the result is multiplied by the
+                                   effect range.  This is done for each position
+                                   and added to the Kd of the loop with known
+                                   Kd.  For example:
+
+                                   (0) KDp = KDk
+                                              + E * (Fp1 - Fk1)
+                                              + E * (Fp2 - Fk2)
+                                              + E * (Fp3 - Fk3)
+
+                                   KDp - Predicted Kd
+                                   KDk - Known Kd
+                                   E   - Effect Range
+                                   Fp# - Factor for the base pair at position #
+                                         in the loop whose Kd is being predicted
+                                   Fk# - Factor for the base pair at position #
+                                         in the loop whose Kd is known
+
+                                   The multiplicative equation multiplies the
+                                   known Kd by a fraction for each base pair in
+                                   the loop.  The numerator of each fraction is
+                                   the (effect range minus one) times the factor
+                                   for the base pair in the loop being predicted
+                                   (factors are values between [0 and 1],
+                                   inclusive) plus one.  The denominator is the
+                                   same, except it's for the known loop.  This
+                                   results in a max factor being the effect
+                                   range and the smallest factor being
+                                   1/effect-range.  For example:
+
+                                   (1) KDp = KDk
+                                              * (((E - 1) * Fp1 + 1) /
+                                                 ((E - 1) * Fk1 + 1))
+                                              * (((E - 1) * Fp2 + 1) /
+                                                 ((E - 1) * Fk2 + 1))
+                                              * (((E - 1) * Fp3 + 1) /
+                                                 ((E - 1) * Fk3 + 1))
+
+                                   KDp - Predicted Kd
+                                   KDk - Known Kd
+                                   E   - Effect Range
+                                   Fp# - Factor for the base pair at position #
+                                         in the loop whose Kd is being predicted
+                                   Fk# - Factor for the base pair at position #
+                                         in the loop whose Kd is known
+
+                                   See --effect-range for the difference in the
+                                   way it is used based on --equation-type.
+                                   Cannot be used with the --refine-solution
+                                   option because the equation type is embedded
+                                   in each factor file.
+     -r|--effect-range    OPTIONAL [500* with '-q 0' or 15* with '-q 1'] When
+                                   --equation-type is 0, the default effect
+                                   range is calculated as the maximum difference
+                                   in Kd observed when loops differ by only one
+                                   base pair (including one closing base pair on
+                                   each end).  When --equation-type is 1, the
+                                   default effect range is calculated as the
+                                   maximum Kd fraction for loops which differ by
+                                   only one base pair.  *If there are no loops
+                                   that differ by one base pair, the default
+                                   value indicated is used.  Cannot be used with
+                                   the --refine-solution option because the
+                                   effect range is embedded in each factor file.
+                                   Note, the largest effect range between loops
+                                   which differ by one base pair is
+                                   automatically calculated as described above
+                                   and then 20% is added (to account for
+                                   incompleteness of the data).  If there are
+                                   very few input Kds, it is recommended you
+                                   supply a value using this option, especially
+                                   when comparing results from different sets
+                                   constructed from the same pool for cross-
+                                   validation purposes.
      -v|--cross-validate  OPTIONAL [Off] For each loop in the input file,
                                    calculate the optimized equation based on
                                    the rest of the data, then evaluate whether
