@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.0';
+my $software_version_number = '1.1';
 my $created_on_date         = '9/17/2009';
 
 ##
@@ -316,8 +316,9 @@ for(my $i = 0;$i < $largest;$i++)
 	       map {my $h = $_;join(',',map {"$_:$h->{$_}"} keys(%$h))}
 	       @{$solution->{VALUES}}),
 	  "]\n");
-    print("\tTRAINING DB STANDARD DEVIATION: $solution->{STDDEV}\n");
-    print("\tEFFECT RANGE: $solution->{EFFECT}\n\n");
+    print("TRAINING DB STANDARD DEVIATION: $solution->{STDDEV}\n");
+    print("EQUATION TYPE: $solution->{TYPE}\n") if(exists($solution->{TYPE}));
+    print("EFFECT RANGE: $solution->{EFFECT}\n\n");
 
     foreach my $calc_motif (@$calc_kds)
       {
@@ -510,6 +511,7 @@ sub sigdec
 sub getFactorHash
   {
     my $input_file = $_[0];
+    #globals: $effect_range, $equation_type
 
     #Open the input file
     if(!open(INPUT,$input_file))
@@ -546,6 +548,151 @@ sub getFactorHash
 		last;
 	      }
 	    $solution->{STDDEV} = $1;
+	  }
+	elsif(/Effect Range: (\S+)/)
+	  {
+	    if(exists($solution->{EFFECT}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{EFFECT} = $1;
+	  }
+	elsif(/Equation Type: (\S+)/)
+	  {
+	    if(exists($solution->{TYPE}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{TYPE} = $1;
+	  }
+	elsif(/^\tPosition \d+:$/)
+	  {push(@{$solution->{VALUES}},{})}
+	elsif(/^\t\t(\S+)\t?(\S*)$/)
+	  {
+	    my $pair   = $1;
+	    my $factor = $2;
+	    $factor = '' unless(defined($factor));
+
+	    if(exists($solution->{VALUES}->[-1]->{$pair}))
+	      {
+		error("This base pair: [$pair] was found more than once in ",
+		      "position [",scalar(@{$solution->{VALUES}}),
+		      "] in file: [$input_file].  Keeping the first value ",
+		      "and skipping the extra.");
+		next;
+	      }
+
+	    $solution->{VALUES}->[-1]->{$pair} = $factor;
+	  }
+	else
+	  {
+	    chomp;
+	    error("Unable to parse line $line_num: [$_].");
+	  }
+      }
+
+    close(INPUT);
+
+    verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
+
+    if(scalar(keys(%$solution)) < 2)
+      {
+	error("Invalid or no solution parsed from file [$input_file].  ",
+	      "Skipping.");
+	return({});
+      }
+
+    if(!exists($solution->{EFFECT}))
+      {
+	error("Solution contains no effect range.");
+	return({});
+      }
+    if(!exists($solution->{TYPE}))
+      {$solution->{TYPE} = 0}
+
+    if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+(e-?\d+)?)\%?$/i)
+      {warning("Invalid standard deviation found in file [$input_file]: ",
+	       "[$solution->{STDDEV}].")}
+
+    if(scalar(@{$solution->{VALUES}}) < 3)
+      {
+	error("Invalid solution in file [$input_file].  The loop must be at ",
+	      "least 1x1 with 2 closing base pair positions.  Only [",
+	      scalar(@{$solution->{VALUES}}),"] positions were parsed.  ",
+	      "Skipping.");
+	return({});
+      }
+    elsif(scalar(@{$solution->{VALUES}}) > 3)
+      {warning("This script was written to calculate STDDEV's of 1x1 ",
+	       "internal loops, but the solution in file [$input_file] ",
+	       "appears to be for a larger loop.  It may still work, but ",
+	       "this could be a mistake.")}
+
+    my @bad =
+      grep {my $h = $_;
+	    scalar(grep {$_ !~ /^([A-Z]{2}|)$/i ||
+			   $h->{$_} !~ /^(0?\.?\d*|1|)$/} keys(%$h))}
+	@{$solution->{VALUES}};
+    if(scalar(@bad))
+      {
+	warning("Invalid base pairs or factor valuess were in your file ",
+		"[$input_file]: [(",
+		join(')(',
+		     map {my $x=$_;
+			  join('=>',map {"$_=>$x->{$_}"} keys(%$x))} @bad),
+		")].");
+      }
+
+    return($solution);
+  }
+
+sub getFactorHashOld
+  {
+    my $input_file = $_[0];
+
+    #Open the input file
+    if(!open(INPUT,$input_file))
+      {
+	#Report an error and iterate if there was an error
+	error("Unable to open input file: [$input_file].\n$!");
+	next;
+      }
+    else
+      {verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	       'Opened input file.')}
+
+    my $line_num     = 0;
+    my $verbose_freq = 100;
+    my $solution = {};
+
+    #For each line in the current input file
+    while(getLine(*INPUT))
+      {
+	$line_num++;
+	verboseOverMe('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+		      "Reading line: [$line_num].") unless($line_num %
+							   $verbose_freq);
+
+	next if(/^\s*#/ || /^\s*$/);
+
+	if(/Solution Standard Deviation: (\S+)$/)
+	  {
+	    if(exists($solution->{STDDEV}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{STDDEV} = $1;
+	    $solution->{STDDEV} =~ s/\%$//;
 	  }
 	elsif(/Effect Range: (\S+)/)
 	  {
@@ -596,8 +743,8 @@ sub getFactorHash
 	return({});
       }
 
-    if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+)$/)
-      {warning("invalid standard deviation found in file [$input_file]: ",
+    if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+(e-?\d+)?)$/)
+      {warning("Invalid standard deviation found in file [$input_file]: ",
 	       "[$solution->{STDDEV}].")}
 
     if(scalar(@{$solution->{VALUES}}) < 3)
@@ -722,6 +869,93 @@ sub getKds
   }
 
 sub calculateKd
+  {
+    my $solution        = $_[0]; #{VALUES => [{AT...},{AA...},{{AT...}}]}
+    my $calculate_motif = $_[1];
+    my $known_motif     = $_[2];
+    my $known_kd        = $_[3];
+    my $kd              = $known_kd;
+
+    if(!exists($solution->{EFFECT}))
+      {
+	error("No effect-range was in the provided solution.");
+	return($kd);
+      }
+
+    if(scalar(@{$solution->{VALUES}}) != scalar(@$calculate_motif) &&
+       scalar(@{$solution->{VALUES}}) != (scalar(@$calculate_motif) - 1) &&
+       scalar(@{$solution->{VALUES}}) != scalar(@$known_motif) &&
+       scalar(@{$solution->{VALUES}}) != (scalar(@$known_motif) - 1))
+      {error("Motifs are not all the same size.")}
+
+
+    #Note, we do not need to alter this sub to account for refined solutions
+    #because getSolutionExhaustively and getSolutionUsingGA return whole actual
+    #refined solutions and that's what this sub should take as input.
+    #See internalCalculateKd to merge a refining solution and the refined
+    #internal solution factors
+
+    if(!exists($solution->{TYPE}) || $solution->{TYPE} == 0)
+      {
+	foreach my $p (0..$#{$solution->{VALUES}})
+	  {
+	    if($calculate_motif->[$p] !~ /^[A-Z]{2}$/i ||
+	       $known_motif->[$p]     !~ /^[A-Z]{2}$/i)
+	      {
+		error("Expected 2 base pairs, but got: ",
+		      "[$calculate_motif->[$p] and $known_motif->[$p]]");
+		next;
+	      }
+
+	    debug("Position ",($p+1),
+		  ": $calculate_motif->[$p]_c vs. $known_motif->[$p]_k");
+
+	    $kd += $solution->{EFFECT} *
+
+	      ((exists($solution->{VALUES}->[$p]->{$calculate_motif->[$p]}) &&
+		$solution->{VALUES}->[$p]->{$calculate_motif->[$p]} ne '' ?
+		$solution->{VALUES}->[$p]->{$calculate_motif->[$p]} : 0) -
+
+	       (exists($solution->{VALUES}->[$p]->{$known_motif->[$p]}) &&
+		$solution->{VALUES}->[$p]->{$known_motif->[$p]} ne '' ?
+		$solution->{VALUES}->[$p]->{$known_motif->[$p]} : 0));
+	  }
+      }
+    elsif($solution->{TYPE} == 1)
+      {
+	foreach my $p (0..$#{$solution->{VALUES}})
+	  {
+	    if($calculate_motif->[$p] !~ /^[A-Z]{2}$/i ||
+	       $known_motif->[$p]     !~ /^[A-Z]{2}$/i)
+	      {
+		error("Expected 2 base pairs, but got: ",
+		      "[$calculate_motif->[$p] and $known_motif->[$p]]");
+		next;
+	      }
+
+	    debug("Position ",($p+1),
+		  ": $calculate_motif->[$p]_c vs. $known_motif->[$p]_k");
+
+	    $kd *=
+
+	      (($solution->{EFFECT} - 1) *
+	       (exists($solution->{VALUES}->[$p]->{$calculate_motif->[$p]}) &&
+		$solution->{VALUES}->[$p]->{$calculate_motif->[$p]} ne '' ?
+		$solution->{VALUES}->[$p]->{$calculate_motif->[$p]} : 0) + 1) /
+
+		  (($solution->{EFFECT} - 1) *
+		   (exists($solution->{VALUES}->[$p]->{$known_motif->[$p]}) &&
+		    $solution->{VALUES}->[$p]->{$known_motif->[$p]} ne '' ?
+		    $solution->{VALUES}->[$p]->{$known_motif->[$p]} : 0) + 1);
+	  }
+      }
+    else
+      {error("Invalid equation type: [$solution->{TYPE}].")}
+
+    return($kd);
+  }
+
+sub calculateKdOld
   {
     my $solution        = $_[0]; #{VALUES => [{AT=>##,...},{AA=>##,...},...]}
     my $calculate_motif = $_[1]; #e.g. ['AT','AA','AT']
