@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.6';
+my $software_version_number = '1.8';
 my $created_on_date         = '8/11/2009';
 
 ##
@@ -29,14 +29,16 @@ my $noheader                  = 0;
 my $ga_flag                   = 0;
 my $use_raw_error             = 0;
 my $pop_size                  = 10000;
-my $mutation_rate             = .005; #For approx. 1 mutation/10 sets of 22 vals
+my $mutation_rate             = .005; #For approx 1 mutation/10 sets of 22 vals
 my $crossover_rate            = .7;
 my $crossover_cutoff          = .7;
 my $crossover_amount          = .5;
-my $max_seconds               = 0; #One hour
-my $target_stddev             = 0; #Must have stddev <= this number to end early
+my $max_seconds               = 0;    #One hour
+my $target_stddev             = 0;    #Must have this number to end early
 my $default_effect_range_add  = 500;
 my $default_effect_range_mult = 15;
+my $use_nonbinders            = 0;
+my $nonbind_thresh            = 0;
 my $effect_range              = 0;
 my $calc_effect_range         = 0;
 my $cross_validate            = 0;
@@ -44,7 +46,7 @@ my @cps                       = ('AU','UA','GC','CG','GU','UG');
 my @ips                       = ('AG','GA','AC','CA','AA','GG','CC','CU','UC',
 				 'UU');
 my $precision_level           = 1;
-my $fitness_factor            = 100; #Kludge to enhance fittness of good solns
+my $fitness_factor            = 100;  #Kludge to enhance fittness of good solns
 my $unweighted_kd_mode        = 0;
 my $weight_kd_c               = 200;
 my $weight_kd_x               = 1.5;
@@ -64,12 +66,14 @@ my $ignore_errors = 0;
 
 my $GetOptHash =
   {'r|effect-range=s'      => \$effect_range,           #OPTIONAL [largest diff
-					                #          plus 20% or
-					                #          500]
+					                # /frac plus 20% or 500
+					                # /15 based on eq type]
    'q|equation-type=s'     => \$equation_type,          #OPTIONAL [0]
    'f|refine-solution=s'   => sub {push(@refine_files,  #OPTIONAL [nothing]
 					sglob($_[1]))},
    'u|use-unweighted-kd!'  => \$unweighted_kd_mode,     #OPTIONAL [Off]
+   'use-non-binders!'      => \$use_nonbinders,         #OPTIONAL [Off]
+   'n|non-bind-thresh=s'   => \$nonbind_thresh,         #OPTIONAL [0]
    'v|cross-validate!'     => \$cross_validate,         #OPTIONAL [Off]
    'g|genetic-algorithm!'  => \$ga_flag,                #OPTIONAL [Off]
    'p|population-size=s'   => \$pop_size,               #OPTIONAL [10000]
@@ -291,13 +295,13 @@ if(scalar(@refine_files) && $effect_range != 0)
 
 if(scalar(@refine_files) && $equation_type != 0)
   {
-    warning("Incompatible options selected.  You cannot refine solutions (-f) ",
-	    "with an equation type (-q) selected because solutions contains ",
-	    "an embedded equation type.  We will assume that you know what ",
-	    "you're doing (since you could be using a solution produced by an ",
-	    "earlier version of this script and use the equation type you ",
-	    "provided, but it will be over-written by the value in the ",
-	    "equation/factor file you provided if it is there).");
+    warning("Incompatible options selected.  You cannot refine solutions ",
+	    "(-f) with an equation type (-q) selected because solutions ",
+	    "contains an embedded equation type.  We will assume that you ",
+	    "know what you're doing (since you could be using a solution ",
+	    "produced by an earlier version of this script and use the ",
+	    "equation type you provided, but it will be over-written by the ",
+	    "value in the equation/factor file you provided if it is there).");
   }
 
 if($precision_level !~ /^[1-9]\d*$/)
@@ -309,9 +313,9 @@ if($precision_level !~ /^[1-9]\d*$/)
   }
 
 if($precision_level > 3)
-  {warning("It is recommended that you not make the precision level very high ",
-	   "simply because of the chances of not being able to find a good ",
-	   "solution.  If you do use a high precision level, you should ",
+  {warning("It is recommended that you not make the precision level very ",
+	   "high simply because of the chances of not being able to find a ",
+	   "good solution.  If you do use a high precision level, you should ",
 	   "increase the population size and running time to account for the ",
 	   "greater possibilities.")}
 
@@ -342,10 +346,33 @@ if($equation_type !~ /^\d+$/)
 
 if($equation_type != 0 && $equation_type != 1)
   {
-    error("Invalid equation type (-q): [$equation_type].  Options are limited ",
-	  "to 'cumulative'/'additive' effect (0) or 'multiplicative' ",
+    error("Invalid equation type (-q): [$equation_type].  Options are ",
+	  "limited to 'cumulative'/'additive' effect (0) or 'multiplicative' ",
 	  "effect (1).  Defaulting to the cumulative effect equation (0).");
     $equation_type = 0;
+  }
+
+if($nonbind_thresh != 0 && !$use_nonbinders)
+  {
+    warning("-n supplied without the --use-non-binders flag.  ",
+	    "--use-non-binders is being automatically turned on.  See -n in ",
+	    "the usage output for more information.");
+  }
+
+if($nonbind_thresh !~ /^(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/)
+  {
+    error("Invalid -n value supplied: [$nonbind_thresh].  It must be a ",
+	  "positive number.");
+    usage(1);
+    quit(6);
+  }
+
+if(scalar(@refine_files) && $nonbind_thresh)
+  {
+    error("-n: [$nonbind_thresh] is not compatible with the --refine-file ",
+	  "option.  The threshold is set by the contents of the file.");
+    usage(1);
+    quit(7);
   }
 
 verbose('Run conditions: ',getCommand(1));
@@ -359,7 +386,7 @@ verbose('[STDOUT] Opened for all output.') if(!defined($outfile_suffix));
 
 #Store info. about the run as a comment at the top of the output file if
 #STDOUT has been redirected to a file
-my $header = join('',('#',getVersion(),"\n",
+my $header = join('',('#',join("\n#",split(/\n/,getVersion())),"\n",
 		      '#',scalar(localtime($^T)),"\n",
 		      '#',getCommand(1),"\n"));
 if(!isStandardOutputToTerminal() && !$noheader)
@@ -421,12 +448,17 @@ foreach my $input_file (@input_files)
     my $cp1_hash            = {};
     my $ip_hash             = {};
     my $cp2_hash            = {};
+    my $bind_cp1_hash       = {};
+    my $bind_ip_hash        = {};
+    my $bind_cp2_hash       = {};
     my @known_kds           = ();
+    my @bind_known_kds      = ();
     my $motif_check         = {};
     my $best_solution       = [];
     my $diff_by_one         = {};
     my $largest_diff_by_one = 0;
     my $largest_frac_by_one = 0;
+    my $max_kd              = 0;
 
     #For each line in the current input file
     while(getLine(*INPUT))
@@ -454,8 +486,8 @@ foreach my $input_file (@input_files)
 	if(length($cp1) == 6 && (!defined($ip) || $ip eq '' ||
 				    !defined($cp2) || $cp2 eq ''))
 	  {
-	    $ip = $cp1;
-	    $ip =~ s/^..(..)..$/$1/;
+	    $ip  = $cp1;
+	    $ip  =~ s/^..(..)..$/$1/;
 	    $cp2 = $cp1;
 	    $cp2 =~ s/^....(..)$/$1/;
 	    $cp1 =~ s/^(..)....$/$1/;
@@ -467,7 +499,7 @@ foreach my $input_file (@input_files)
 	  }
 
 	#Check to see if loop is a non-binder
-	if(!defined($kd) || $kd !~ /^\d+\.?\d*(e\+?\d+)?$/i)
+	if(!defined($kd) || $kd !~ /^(\d+\.?\d*|\d*\.\d+(e-?\d+)?)\%?$/i)
 	  {$kd = 'none'}
 
 	my $pair_errors = '';
@@ -497,10 +529,21 @@ foreach my $input_file (@input_files)
 	$cp1_hash->{$cp1}++;
 	$ip_hash->{$ip}++;
 	$cp2_hash->{$cp2}++;
+	if($kd ne 'none')
+	  {
+	    #Keep track of the binding data
+	    $bind_cp1_hash->{$cp1}++;
+	    $bind_ip_hash->{$ip}++;
+	    $bind_cp2_hash->{$cp2}++;
+	    push(@bind_known_kds,[$cp1,$ip,$cp2,$kd]);
+	  }
 	push(@known_kds,[$cp1,$ip,$cp2,$kd]);
 
 	#Skip the difference calculation if the loop doesn't bind
-	next if($kd eq 'none');
+	if($kd eq 'none')
+	  {next}
+	elsif($use_nonbinders && $max_kd < $kd)
+	  {$max_kd = $kd}
 
 	#Keep track of the largest difference in Kd's between loops that differ
 	#by only one base pair so we can use it to calculate a good effect
@@ -527,13 +570,15 @@ foreach my $input_file (@input_files)
 		  {$diff_by_one->{$quar}->{SM} = $kd}
 
 		if(exists($diff_by_one->{$quar}->{LA}) &&
-		   ($diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM}) >
-		   $largest_diff_by_one)
+		   ($diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM})
+		   > $largest_diff_by_one)
 		  {
 		    $largest_diff_by_one =
-		      $diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}->{SM};
+		      $diff_by_one->{$quar}->{LA} - $diff_by_one->{$quar}
+			->{SM};
 		    $largest_frac_by_one =
-		      $diff_by_one->{$quar}->{LA} / $diff_by_one->{$quar}->{SM};
+		      $diff_by_one->{$quar}->{LA} / $diff_by_one->{$quar}
+			->{SM};
 		  }
 	      }
 	    else
@@ -545,6 +590,13 @@ foreach my $input_file (@input_files)
 
     verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
 	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
+
+    if(scalar(@bind_known_kds) == 0)
+      {
+	error("No binding loops supplied in file: [$input_file].  ",
+	      "Unable to optimize the equation.  Skipping.");
+	next;
+      }
 
     #Set the effect range based on whether there's a supplied value or if not,
     #see if the data supports a calculated range (and if so, calculate a range
@@ -575,65 +627,101 @@ foreach my $input_file (@input_files)
 	  }
       }
 
+    if($use_nonbinders && $nonbind_thresh == 0)
+      {$nonbind_thresh = $max_kd * 2}
+    elsif($use_nonbinders && $nonbind_thresh < $max_kd)
+      {warning("The --non-bind-thresh supplied: [$nonbind_thresh] is less ",
+	       "than an actual binding Kd: [$max_kd] in file: [$input_file].")}
+
+    if($use_nonbinders)
+      {verbose("Non-binding Threshold: [$nonbind_thresh]")}
     verbose("Effect Range: [$effect_range]");
 
     #Cross-validate if requested and valid
-    if($cross_validate && scalar(@known_kds) > 1)
+    if($cross_validate && scalar(@bind_known_kds) > 1)
       {
 	#Store info. about the run as a comment at the top of the output file
 	#if noheader is not true and we're not in a valid cross-validate mode
 	print($header) if(!$noheader);
 
 	my $cross_count = 0;
-	foreach my $motif_array (@known_kds)
+	foreach my $motif_array ($use_nonbinders ?
+				 @known_kds : @bind_known_kds)
 	  {
 	    $cross_count++;
 
 	    verbose("Working on solution $cross_count of ",
-		    scalar(@known_kds),'.');
+		    scalar($use_nonbinders ? @known_kds : @bind_known_kds),
+		    '.');
 
 	    debug("Calling getSolutionExhaustively with these known Kd ",
-		  "arrays: [",grep {$_ ne $motif_array} @known_kds,
-		  "].  There are ",scalar(@known_kds),
+		  "arrays: [",
+		  grep {$_ ne $motif_array} ($use_nonbinders ?
+					     @known_kds : @bind_known_kds),
+		  "].  There are ",scalar($use_nonbinders ?
+					  @known_kds : @bind_known_kds),
 		  " known Kd arrays total.");
 
-	    if($cp1_hash->{$motif_array->[0]} == 1 ||
-	       $ip_hash->{$motif_array->[1]}  == 1 ||
-	       $cp2_hash->{$motif_array->[2]} == 1)
+	    #If there aren't enough binding loops to predict with, skip it
+	    if($bind_cp1_hash->{$motif_array->[0]} <= 1 ||
+	       $bind_ip_hash->{$motif_array->[1]}  <= 1 ||
+	       $bind_cp2_hash->{$motif_array->[2]} <= 1)
 	      {
 		warning("Cannot predict a reliable set of factors for loop: ",
 			"[@$motif_array] because one or more of its base ",
 			"pairs does not exist in the remaining data that is ",
 			"being used for optimization.  This script cannot be ",
 			"expected to generate importance factors for base ",
-			"pairs on which it has not data on which to optimize ",
-			"the factor.  Skipping this loop in the cross-",
+			"pairs on which it has no data to optimize the ",
+			"factor.  Skipping this loop in the cross-",
 			"validation.");
 		next;
 	      }
 
 	    my $solution = {};
-	    if($ga_flag)
-	      {$solution =
-		 getSolutionUsingGA([keys(%$cp1_hash)],
-				    [keys(%$ip_hash)],
-				    [keys(%$cp2_hash)],
-				    [grep {$_ ne $motif_array}
-				     @known_kds])}
+	    if($use_nonbinders)
+	      {
+		if($ga_flag)
+		  {$solution =
+		     getSolutionUsingGA([keys(%$cp1_hash)],
+					[keys(%$ip_hash)],
+					[keys(%$cp2_hash)],
+					[grep {$_ ne $motif_array}
+					 @known_kds])}
+		else
+		  {$solution =
+		     getSolutionExhaustively([keys(%$cp1_hash)],
+					     [keys(%$ip_hash)],
+					     [keys(%$cp2_hash)],
+					     [grep {$_ ne $motif_array}
+					      @known_kds])}
+	      }
 	    else
-	      {$solution =
-		 getSolutionExhaustively([keys(%$cp1_hash)],
-					 [keys(%$ip_hash)],
-					 [keys(%$cp2_hash)],
-					 [grep {$_ ne $motif_array}
-					  @known_kds])}
+	      {
+		if($ga_flag)
+		  {$solution =
+		     getSolutionUsingGA([keys(%$bind_cp1_hash)],
+					[keys(%$bind_ip_hash)],
+					[keys(%$bind_cp2_hash)],
+					[grep {$_ ne $motif_array}
+					 @bind_known_kds])}
+		else
+		  {$solution =
+		     getSolutionExhaustively([keys(%$bind_cp1_hash)],
+					     [keys(%$bind_ip_hash)],
+					     [keys(%$bind_cp2_hash)],
+					     [grep {$_ ne $motif_array}
+					      @bind_known_kds])}
+	      }
 
 	    my($ccp1,$cip,$ccp2,$target_kd);
 	    ($ccp1,$cip,$ccp2,$target_kd) = @$motif_array;
 
 	    my $stddev =
 	      getStandardDeviation($solution,
-				   [grep {$_ ne $motif_array} @known_kds],
+				   [grep {$_ ne $motif_array}
+				    ($use_nonbinders ?
+				     @known_kds : @bind_known_kds)],
 				   $motif_array);
 
 	    print("Best Solution $cross_count:\n");
@@ -650,7 +738,7 @@ foreach my $input_file (@input_files)
       }
     else
       {	
-	if($cross_validate && scalar(@known_kds) < 2)
+	if($cross_validate && scalar(@bind_known_kds) < 2)
 	  {error("Not enough data to cross-validate!  ",
 		 "Computing one solution.")}
 
@@ -665,8 +753,18 @@ foreach my $input_file (@input_files)
 	    #and prepare it so that values are centered around the current ones
 	    if(defined($refine_solution))
 	      {
-		$effect_range  = $refine_solution->{EFFECT};
-		$equation_type = $refine_solution->{TYPE};
+		$effect_range   = $refine_solution->{EFFECT};
+		$equation_type  = $refine_solution->{TYPE};
+		if(exists($refine_solution->{NONBIND}))
+		  {
+		    $nonbind_thresh = $refine_solution->{NONBIND};
+		    if($refine_solution->{NONBIND})
+		      {
+			verbose("Non-binding Threshold: [$nonbind_thresh]")
+			  unless($use_nonbinders);
+			$use_nonbinders = 1;
+		      }
+		  }
 
 		my $max_places = 0;
 		foreach my $valhash (@{$refine_solution->{VALUES}})
@@ -681,11 +779,11 @@ foreach my $input_file (@input_files)
 		$refinement_factor = '0.' . '0' x ($max_places +
 						   $precision_level - 1) . '1';
 
-		#We want the factor to be between 0 and 1 (inclusive).  Since we
-		#know we're going to be adding at most 10 * refinement_factor
-		#and that we're going to be subtracting 5 * refinement_factor,
-		#we need to make sure nothing will end up less than 0 or greater
-		#than 1
+		#We want the factor to be between 0 and 1 (inclusive).  Since
+		#we know we're going to be adding at most 10 *
+		#refinement_factor and that we're going to be subtracting 5 *
+		#refinement_factor, we need to make sure nothing will end up
+		#less than 0 or greater than 1
 		my $subt = $refinement_factor * 5;
 		my $max = 1 - ($refinement_factor * 10);
 
@@ -697,7 +795,8 @@ foreach my $input_file (@input_files)
 			  {
 			    $valhash->{$key} -= $subt;
 			    $valhash->{$key} = 0 if($valhash->{$key} < 0);
-			    $valhash->{$key} = $max if($valhash->{$key} > $max);
+			    $valhash->{$key} = $max
+			      if($valhash->{$key} > $max);
 			  }
 		      }
 		  }
@@ -705,26 +804,52 @@ foreach my $input_file (@input_files)
 	  }
 
 	my $solution = {};
-	if($ga_flag)
-	  {$solution =
-	     getSolutionUsingGA([keys(%$cp1_hash)],
-				[keys(%$ip_hash)],
-				[keys(%$cp2_hash)],
-				[@known_kds],
-			        $refine_solution,
-			        $refinement_factor,
-			        $refine_solution_unaltered,
-			        $current_output_file)}
+	if($use_nonbinders)
+	  {
+	    if($ga_flag)
+	      {$solution =
+		 getSolutionUsingGA([keys(%$cp1_hash)],
+				    [keys(%$ip_hash)],
+				    [keys(%$cp2_hash)],
+				    [@known_kds],
+				    $refine_solution,
+				    $refinement_factor,
+				    $refine_solution_unaltered,
+				    $current_output_file)}
+	    else
+	      {$solution =
+		 getSolutionExhaustively([keys(%$cp1_hash)],
+					 [keys(%$ip_hash)],
+					 [keys(%$cp2_hash)],
+					 [@known_kds],
+					 $refine_solution,
+					 $refinement_factor,
+					 $refine_solution_unaltered,
+					 $current_output_file)}
+	  }
 	else
-	  {$solution =
-	     getSolutionExhaustively([keys(%$cp1_hash)],
-				     [keys(%$ip_hash)],
-				     [keys(%$cp2_hash)],
-				     [@known_kds],
-				     $refine_solution,
-				     $refinement_factor,
-				     $refine_solution_unaltered,
-				     $current_output_file)}
+	  {
+	    if($ga_flag)
+	      {$solution =
+		 getSolutionUsingGA([keys(%$bind_cp1_hash)],
+				    [keys(%$bind_ip_hash)],
+				    [keys(%$bind_cp2_hash)],
+				    [@bind_known_kds],
+				    $refine_solution,
+				    $refinement_factor,
+				    $refine_solution_unaltered,
+				    $current_output_file)}
+	    else
+	      {$solution =
+		 getSolutionExhaustively([keys(%$bind_cp1_hash)],
+					 [keys(%$bind_ip_hash)],
+					 [keys(%$bind_cp2_hash)],
+					 [@bind_known_kds],
+					 $refine_solution,
+					 $refinement_factor,
+					 $refine_solution_unaltered,
+					 $current_output_file)}
+	  }
       }
 
     #If an output file name suffix is set
@@ -831,6 +956,17 @@ sub getFactorHash
 	      }
 	    $solution->{EFFECT} = $1;
 	  }
+	elsif(/Non-binding Threshold: (\S+)/)
+	  {
+	    if(exists($solution->{NONBIND}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{NONBIND} = $1;
+	  }
 	elsif(/Equation Type: (\S+)/)
 	  {
 	    if(exists($solution->{TYPE}))
@@ -881,9 +1017,9 @@ sub getFactorHash
       }
 
     if(!exists($solution->{EFFECT}))
-      {$solution->{EFFECT} = $effect_range}
+      {$solution->{EFFECT}  = $effect_range}
     if(!exists($solution->{TYPE}))
-      {$solution->{TYPE}   = $equation_type}
+      {$solution->{TYPE}    = $equation_type}
 
     if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+)$/)
       {warning("invalid standard deviation found in file [$input_file]: ",
@@ -939,6 +1075,8 @@ sub reportSolution
 
     my $output =
       join('',("Equation Type: $et\n",
+	       ($use_nonbinders && $solution->{NONBIND} > 0 ?
+		"Non-binding Threshold: $solution->{NONBIND}\n" : ''),
 	       "Effect Range: $er\n",
 	       "Solution Standard Deviation: $solution->{STDDEV}",
 	       ($use_raw_error ? '' : '%'),"\n",
@@ -977,7 +1115,7 @@ sub reportSolution
     if(defined($outfile) && $outfile ne '')
       {
 	#Select standard out
-       select(STDOUT);
+	select(STDOUT);
 	#Close the output file handle
 	close(OUTPUT);
       }
@@ -996,6 +1134,12 @@ sub calculateKd
     if(!exists($solution->{EFFECT}))
       {
 	error("No effect-range was in the provided solution.");
+	return($kd);
+      }
+    #Do not predict using a non-binding loop
+    elsif($kd eq 'none')
+      {
+	error("Invalid known Kd: [$kd].");
 	return($kd);
       }
 
@@ -1081,17 +1225,25 @@ sub internalCalculateKd
     my $kd                = $known_motif->[3];
     #global: $effect_range, $equation_type
 
+    #Do not predict using a non-binding loop
+    if($kd eq 'none')
+      {
+	error("Invalid known Kd: [$kd].");
+	return($kd);
+      }
+
     if(scalar(@$calculate_motif) != scalar(@$known_motif))
       {error("Motifs are not all the same size.")}
 
     if(defined($refine_solution))
       {
 	#Cursory check on the solution sizes - should do something more precise
-	if(scalar(@{$refine_solution->{VALUES}}) != scalar(@$calculate_motif) &&
-	   scalar(@{$refine_solution->{VALUES}}) != (scalar(@$calculate_motif) -
-						     1) &&
+	if(scalar(@{$refine_solution->{VALUES}}) != scalar(@$calculate_motif)
+	   && scalar(@{$refine_solution->{VALUES}}) !=
+	   (scalar(@$calculate_motif) - 1) &&
 	   scalar(@{$refine_solution->{VALUES}}) != scalar(@$known_motif) &&
-	   scalar(@{$refine_solution->{VALUES}}) != (scalar(@$known_motif) - 1))
+	   scalar(@{$refine_solution->{VALUES}}) !=
+	   (scalar(@$known_motif) - 1))
 	  {error("Motifs are not all the same size.")}
 
 	#This is for backwards compatibility
@@ -1101,8 +1253,8 @@ sub internalCalculateKd
 		  $refine_solution->{EFFECT} : $effect_range);
 
 	#Each factor in the existing refining solution must have a value added
-	#to it consisting of the refinement factor times the random value in the
-	#internal solution
+	#to it consisting of the refinement factor times the random value in
+	#the internal solution
 
 	foreach my $p (0..$#{$refine_solution->{VALUES}})
 	  {
@@ -1410,9 +1562,10 @@ sub getSolutionExhaustively
 			      @{$best_internal_solution}
 			      [(scalar(@$cp1s) + scalar(@$ips))..
 			       $#{$best_internal_solution}]}],
-			    STDDEV => $best_stddev,
-			    EFFECT => $effect_range,
-			    TYPE   => $equation_type},
+			    STDDEV  => $best_stddev,
+			    EFFECT  => $effect_range,
+			    TYPE    => $equation_type,
+			    NONBIND => $nonbind_thresh},
 			   $outfile);
 
 	    if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
@@ -1466,9 +1619,10 @@ sub getSolutionExhaustively
 				       $#{$best_internal_solution}]}];
       }
 
-    $best_solution->{STDDEV} = $best_stddev;
-    $best_solution->{EFFECT} = $effect_range;
-    $best_solution->{TYPE}   = $equation_type;
+    $best_solution->{STDDEV}  = $best_stddev;
+    $best_solution->{EFFECT}  = $effect_range;
+    $best_solution->{TYPE}    = $equation_type;
+    $best_solution->{NONBIND} = $nonbind_thresh;
 
     return($best_solution);
   }
@@ -1488,15 +1642,15 @@ sub mergeRefinements
 
     #[{AT => ...},{AA => ...},{AT => ...}]
     $real_solution_vals =
-      [{map {my $j = $i++;$order->[$j] => $refine_val_ary->[0]->{$order->[$j]} +
-	       ($_ * $refinement_factor)}
+      [{map {my $j = $i++;$order->[$j] => $refine_val_ary->[0]->{$order->[$j]}
+	       + ($_ * $refinement_factor)}
 	@{$internal_solution}[0..(scalar(@$cp1s) - 1)]},
-       {map {my $j = $i++;$order->[$j] => $refine_val_ary->[1]->{$order->[$j]} +
-	       ($_ * $refinement_factor)}
+       {map {my $j = $i++;$order->[$j] => $refine_val_ary->[1]->{$order->[$j]}
+	       + ($_ * $refinement_factor)}
 	@{$internal_solution}[scalar(@$cp1s)..(scalar(@$cp1s) + scalar(@$ips) -
 					       1)]},
-       {map {my $j = $i++;$order->[$j] => $refine_val_ary->[2]->{$order->[$j]} +
-	       ($_ * $refinement_factor)}
+       {map {my $j = $i++;$order->[$j] => $refine_val_ary->[2]->{$order->[$j]}
+	       + ($_ * $refinement_factor)}
 	@{$internal_solution}[(scalar(@$cp1s) + scalar(@$ips))..
 			      $#{$internal_solution}]}];
 
@@ -1556,7 +1710,10 @@ sub getSolutionUsingGA
       {
 	my $best_stddev = getStandardDeviation($refine_solution_unaltered,
 					       $known_kds);
-	$best_fitness = 1/$best_stddev;#exp($fitness_factor*(1/$best_stddev));
+	if($best_stddev == 0)
+	  {$best_fitness = 0}
+	else
+	  {$best_fitness = 1/$best_stddev}#exp($fitness_factor*(1/$best_stddev));
 	verbose("Overall Starting Standard Deviation: [$best_stddev",
 		($use_raw_error ? '' : '%'),"]:");
 	verbose(reportSolution($refine_solution)) if($DEBUG);
@@ -1608,15 +1765,19 @@ sub getSolutionUsingGA
 	#For each solution in the population
 	foreach my $internal_solution (@$population)
 	  {
+	    my $tmp_stddev =
+	      getInternalStandardDeviation($internal_solution,
+					   $int_sol_pos_hash,
+					   $known_kds,
+					   $refine_solution,
+					   $refinement_factor);
+
 	    #Assign solution fitness exp($fitness_factor*(1/stddev))
 	    push(@fitnesses,
-		 (1/
+		 ($tmp_stddev == 0 ? 0 :
+		  1/
 		 #exp($fitness_factor/
-		     getInternalStandardDeviation($internal_solution,
-						  $int_sol_pos_hash,
-						  $known_kds,
-						  $refine_solution,
-						  $refinement_factor)));
+		     $tmp_stddev));
 	    $total_fitness += $fitnesses[-1];
 
 	    debug("FITNESS(",#exp($fitness_factor/STDDEV)
@@ -1624,13 +1785,15 @@ sub getSolutionUsingGA
 		  "): $fitnesses[-1]");
 
 	    #If fitness is better than the best or the best is not yet assigned
-	    if(!defined($best_fitness) || $fitnesses[-1] > $best_fitness)
+	    if(!defined($best_fitness) || $fitnesses[-1] > $best_fitness ||
+	       ($fitnesses[-1] == 0 && $best_fitness != 0))
 	      {
 		#Save the best solution
 		$best_internal_solution = [@$internal_solution];
 		$best_fitness = $fitnesses[-1];
 
-		my $best_stddev = 1/$best_fitness;#$fitness_factor/log($best_fitness);
+		my $best_stddev = $best_fitness == 0 ? 0 :
+		  1/$best_fitness;#$fitness_factor/log($best_fitness);
 
 		my $i = 0;
 
@@ -1676,17 +1839,20 @@ sub getSolutionUsingGA
 				  @{$best_internal_solution}
 				  [(scalar(@$cp1s) + scalar(@$ips))..
 				   $#{$best_internal_solution}]}],
-				STDDEV => $best_stddev,
-				EFFECT => $effect_range,
-				TYPE   => $equation_type},
+				STDDEV  => $best_stddev,
+				EFFECT  => $effect_range,
+				TYPE    => $equation_type,
+			        NONBIND => $nonbind_thresh},
 			       $outfile);
 
 		last if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
 			($target_fitness != 0 &&
-			 $best_fitness > $target_fitness));
+			 ($best_fitness == 0 ||
+			  $best_fitness > $target_fitness)));
 	      }
 
 	    last if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
+		    $best_fitness == 0 ||  #Best possible answer - end early
 		    ($target_fitness != 0 && $best_fitness > $target_fitness));
 	  }
 
@@ -1694,10 +1860,14 @@ sub getSolutionUsingGA
 	      $total_fitness / scalar(@fitnesses),"].");
 
 	if(($max_seconds != 0 && markTime(-1) > $max_seconds) ||
+	   $best_fitness == 0 ||  #Best possible answer - end early
 	   ($target_fitness != 0 && $best_fitness > $target_fitness))
 	  {
 	    if($max_seconds != 0 && markTime(-1) > $max_seconds)
 	      {verbose("Hit max time")}
+	    elsif($best_fitness == 0 &&
+		  $max_seconds == 0 && $target_fitness == 0)
+	      {warning("Perfect solution found.  Ending early.")}
 	    else
 	      {verbose("Hit target fitness of $target_fitness: ",
 		       "[$best_fitness]")}
@@ -1803,7 +1973,7 @@ sub getSolutionUsingGA
 				       $#{$best_internal_solution}]}];
       }
 
-    $best_solution->{STDDEV} = 1/$best_fitness;#$fitness_factor/(log($best_fitness));
+    $best_solution->{STDDEV} = $best_fitness == 0 ? 0 : 1/$best_fitness;#$fitness_factor/(log($best_fitness));
     $best_solution->{EFFECT} = $effect_range;
     $best_solution->{TYPE}   = $equation_type;
 
@@ -1874,7 +2044,7 @@ sub getRandomInternalSolution
     my $size = $_[0];
     my $internal_solution = [];
     #Note, this does not need to change to accommodate the refining solution
-    #method because the internal solution is simply an integer between 0 and 10.
+    #method because the internal solution is simply an integer between 0 and 10
     foreach(1..$size)
       {push(@$internal_solution,int(rand($rand_input)))}
     return($internal_solution);
@@ -1894,12 +2064,18 @@ sub getInternalStandardDeviation
 
     foreach my $calculate_kd_array (@$known_kds)
       {
+	my $actual_kd = ($calculate_kd_array->[3] eq 'none' ?
+			 $nonbind_thresh : $calculate_kd_array->[3]);
+
 	debug("KD: $calculate_kd_array->[3]");
-	debug("WEIGHTED KD: ",weightKd($calculate_kd_array->[3]));
+	debug("WEIGHTED KD: ",weightKd($actual_kd));
 
 	foreach my $known_kd_array (@$known_kds)
 	  {
+	    #Next if it's the same array
 	    next if($known_kd_array eq $calculate_kd_array);
+	    #Next if the known Kd array is a non-binding loop
+	    next if($known_kd_array->[3] eq 'none');
 	    $num_calcs++;
 	    my $pred_kd =
 	      internalCalculateKd($internal_solution,
@@ -1908,25 +2084,32 @@ sub getInternalStandardDeviation
 				  $known_kd_array,
 				  $refine_solution,
 				  $refinement_factor);
-	    $err = $calculate_kd_array->[3] - $pred_kd;
+
+	    #If we're calculating for a non-binding loop, set the error based
+	    #on the non-binding threshold - zero if it's above and pred/thresh
+	    #if it's below
+	    if($calculate_kd_array->[3] eq 'none')
+	      {$err = ($pred_kd < $nonbind_thresh ?
+		       ($nonbind_thresh - $pred_kd) : 0)}
+	    else
+	      {$err = $actual_kd - $pred_kd}
 
 	    debug("PREDICTED KD: $pred_kd\nDIFFERENCE: $err");
 
 	    unless($use_raw_error)
 	      {
-		debug("PERCENT DIFFERENCE: ",100*$err/$calculate_kd_array->[3],
-		      '%');
+		debug("PERCENT DIFFERENCE: ",100*$err/$actual_kd,'%');
 
 		#Convert the error to a percentage of the known Kd value
 		if($unweighted_kd_mode)
 		  {
 		    #By first dividing by the known Kd
-		    $err /= $calculate_kd_array->[3];
+		    $err /= $actual_kd;
 		  }
 		else
 		  {
 		    #By first dividing by the weighted known Kd
-		    $err /= weightKd($calculate_kd_array->[3]);
+		    $err /= weightKd($actual_kd);
 		  }
 
 		#Then by multiplying by 100;
@@ -1964,15 +2147,30 @@ sub getStandardDeviation
     foreach my $calculate_kd_array (defined($calc_array) ?
 				    $calc_array : @$known_kds)
       {
+	my $actual_kd = ($calculate_kd_array->[3] eq 'none' ?
+			 $nonbind_thresh : $calculate_kd_array->[3]);
+
 	foreach my $known_kd_array (@$known_kds)
 	  {
+	    #Next if it's the same array
 	    next if($known_kd_array eq $calculate_kd_array);
+	    #Next if the known Kd array is a non-binding loop
+	    next if($known_kd_array->[3] eq 'none');
 	    $num_calcs++;
-	    $err = $calculate_kd_array->[3] -
+	    my $pred_kd =
 	      calculateKd($solution,
 			  $calculate_kd_array,
 			  $known_kd_array,
 			  $known_kd_array->[3]);
+
+	    #If we're calculating for a non-binding loop, set the error based
+	    #on the non-binding threshold - zero if it's above and pred/thresh
+	    #if it's below
+	    if($calculate_kd_array->[3] eq 'none')
+	      {$err = ($pred_kd < $nonbind_thresh ?
+		       ($nonbind_thresh - $pred_kd) : 0)}
+	    else
+	      {$err = $actual_kd - $pred_kd}
 
 	    unless($use_raw_error)
 	      {
@@ -1980,12 +2178,12 @@ sub getStandardDeviation
 		if($unweighted_kd_mode)
 		  {
 		    #By first dividing by the known Kd
-		    $err /= $calculate_kd_array->[3];
+		    $err /= $actual_kd;
 		  }
 		else
 		  {
 		    #By first dividing by the weighted known Kd
-		    $err /= weightKd($calculate_kd_array->[3]);
+		    $err /= weightKd($actual_kd);
 		  }
 
 		#Then by multiplying by 100;
@@ -2002,6 +2200,11 @@ sub getStandardDeviation
 sub weightKd
   {
     my $kd = $_[0];
+    if($kd !~ /^(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/)
+      {
+	error("Invalid Kd: [$kd].  It must be a number.");
+	return($kd);
+      }
     #globals: $weight_kd_c,$weight_kd_x,$weight_kd_xsquared,$weight_kd_xcubed
     return($weight_kd_c +
 	   $weight_kd_x * $kd +
@@ -2018,6 +2221,8 @@ sub copySolution
       {$copy->{EFFECT} = $solution->{EFFECT}}
     if(exists($solution->{TYPE}))
       {$copy->{TYPE} = $solution->{TYPE}}
+    if(exists($solution->{NONBIND}))
+      {$copy->{NONBIND} = $solution->{NONBIND}}
     return($copy);
   }
 
@@ -2157,11 +2362,24 @@ rwleach\@ccr.buffalo.edu
                 (in increments of 0.1) that fit the known Kds in that data.
                 Using the equation, one can predict the Kd of an unknown loop.
                 The solution consists of a set of importance factors broken
-                down by base pair position and value.  Here is the equation:
+                down by base pair position and value.  There are two equations
+                to choose from, an additive equation:
 
-                calculated_k_d = known_k_d + effect_range * (pv1_c - pv1_k) +
-                                 effect_range * (lv2_c - lv2_k) + effect_range
-                                 * (pv3_c - pv3_k)
+                calculated_k_d = known_k_d
+                                   + effect_range * (pv1_c - pv1_k)
+                                   + effect_range * (lv2_c - lv2_k)
+                                   + effect_range * (pv3_c - pv3_k)
+
+                or a multiplicative equation:
+
+                calculated_k_d = known_k_d
+                                   * (((effect_range - 1) * pv1_c + 1) /
+                                      ((effect_range - 1) * pv1_k + 1))
+                                   * (((effect_range - 1) * lv2_c + 1) /
+                                      ((effect_range - 1) * lv2_k + 1))
+                                   * (((effect_range - 1) * pv3_c + 1) /
+                                      ((effect_range - 1) * pv3_k + 1))
+
 
                 where:
                 	pv = pair value
@@ -2170,10 +2388,9 @@ rwleach\@ccr.buffalo.edu
                 	_c = calculated
                 	_k = known
 
-                Note, the default effect range is the difference in Kd between
-                loops that differ by only one base pair.  At the time this
-                script was written, the data we had dictated the default Kd of
-                410.4.
+                Note, the default effect range for the first equation is
+                largest difference/ratio between loops that differ by only one
+                base pair (or 500/15 if no pairs differ by one BP).
 
 * INPUT FORMAT: The input file is a tab-delimited file of tRNA 1x1 loops
                 (including a closing base pair on each end).  Each base pair is
@@ -2190,9 +2407,12 @@ rwleach\@ccr.buffalo.edu
                 CG,AA,CG	820
                 CG,GG,CG	520
 
+                To indicate a non-binding loop, leave the second column empty
+                or put a non-numeric string there such as "none" or "infinity".
 
 * OUTPUT FORMAT: Regular mode example (without using -v):
 
+Equation Type: 1
 Effect Range: 472
 Solution Standard Deviation: 15.5409137440499
 	Position 1:
@@ -2221,14 +2441,17 @@ Solution Standard Deviation: 15.5409137440499
 		GU	
 		UG	0.1
 
-                 The lines without numbers represent under-representation of the
-                 input data.  If a pair is not represented in a position, an
-                 optimized value cannot be assigned to it.  These factors are
-                 assumed to be 0 when optimizing.
+                 The lines without numbers represent under-representation of
+                 the input data.  If a pair is not represented in a position,
+                 an optimized value cannot be assigned to it.  These factors
+                 are assumed to be 0 when optimizing.
 
-                 With the cross-validate option, multiple solutions are output along with a message of standard deviation of the calculations for the loop left out:
+                 With the cross-validate option, multiple solutions are output
+                 along with a message of standard deviation of the calculations
+                 for the loop left out:
 
 Best Solution 1:
+Equation Type: 1
 Effect Range: 472
 Solution Standard Deviation: 67.076514694261
         Position 1:
@@ -2258,6 +2481,7 @@ Solution Standard Deviation: 67.076514694261
                 UG      0
 Cross Validation Result: Within predicted standard error: Predicted standard error: 67.076514694261.  Withheld [UA,CA,CG] with a known Kd of 15 and resulted in an average calculated Kd that has a standard deviation of [47.8650185417284].
 Best Solution 2:
+Equation Type: 1
 Effect Range: 472
 Solution Standard Deviation: 65.4860020965415
         Position 1:
@@ -2314,8 +2538,8 @@ end_print
                                    -i "*.txt *.text").  See --help for a
                                    description of the input file format.
                                    *No flag required.
-     -q|--equation-type   OPTIONAL [0] Values can be 'additive' ('cumulative' or
-                                   '0' will work for this too) or
+     -q|--equation-type   OPTIONAL [0] Values can be 'additive' ('cumulative'
+                                   or '0' will work for this too) or
                                    'multiplicative' ('1' will work for this as
                                    well).  The first additive option adds the
                                    effect range multiplied by the difference
@@ -2324,10 +2548,10 @@ end_print
                                    factor for the base pair in the loop with
                                    known Kd is subtracted from the factor for
                                    the base pair in the loop whose Kd is being
-                                   predicted and the result is multiplied by the
-                                   effect range.  This is done for each position
-                                   and added to the Kd of the loop with known
-                                   Kd.  For example:
+                                   predicted and the result is multiplied by
+                                   the effect range.  This is done for each
+                                   position and added to the Kd of the loop
+                                   with known Kd.  For example:
 
                                    (0) KDp = KDk
                                               + E * (Fp1 - Fk1)
@@ -2338,20 +2562,21 @@ end_print
                                    KDk - Known Kd
                                    E   - Effect Range
                                    Fp# - Factor for the base pair at position #
-                                         in the loop whose Kd is being predicted
+                                         in the loop whose Kd is being
+                                         predicted
                                    Fk# - Factor for the base pair at position #
                                          in the loop whose Kd is known
 
                                    The multiplicative equation multiplies the
                                    known Kd by a fraction for each base pair in
                                    the loop.  The numerator of each fraction is
-                                   the (effect range minus one) times the factor
-                                   for the base pair in the loop being predicted
-                                   (factors are values between [0 and 1],
-                                   inclusive) plus one.  The denominator is the
-                                   same, except it's for the known loop.  This
-                                   results in a max factor being the effect
-                                   range and the smallest factor being
+                                   the (effect range minus one) times the
+                                   factor for the base pair in the loop being
+                                   predicted (factors are values between [0 and
+                                   1], inclusive) plus one.  The denominator is
+                                   the same, except it's for the known loop.
+                                   This results in a max factor being the
+                                   effect range and the smallest factor being
                                    1/effect-range.  For example:
 
                                    (1) KDp = KDk
@@ -2366,7 +2591,8 @@ end_print
                                    KDk - Known Kd
                                    E   - Effect Range
                                    Fp# - Factor for the base pair at position #
-                                         in the loop whose Kd is being predicted
+                                         in the loop whose Kd is being
+                                         predicted
                                    Fk# - Factor for the base pair at position #
                                          in the loop whose Kd is known
 
@@ -2377,17 +2603,18 @@ end_print
                                    in each factor file.
      -r|--effect-range    OPTIONAL [500* with '-q 0' or 15* with '-q 1'] When
                                    --equation-type is 0, the default effect
-                                   range is calculated as the maximum difference
-                                   in Kd observed when loops differ by only one
-                                   base pair (including one closing base pair on
-                                   each end).  When --equation-type is 1, the
-                                   default effect range is calculated as the
-                                   maximum Kd fraction for loops which differ by
-                                   only one base pair.  *If there are no loops
-                                   that differ by one base pair, the default
-                                   value indicated is used.  Cannot be used with
-                                   the --refine-solution option because the
-                                   effect range is embedded in each factor file.
+                                   range is calculated as the maximum
+                                   difference in Kd observed when loops differ
+                                   by only one base pair (including one closing
+                                   base pair on each end).  When
+                                   --equation-type is 1, the default effect
+                                   range is calculated as the maximum Kd
+                                   fraction for loops which differ by only one
+                                   base pair.  *If there are no loops that 
+                                   differ by one base pair, the default value
+                                   indicated is used.  Cannot be used with the
+                                   --refine-solution option because the effect
+                                   range is embedded in each factor file.
                                    Note, the largest effect range between loops
                                    which differ by one base pair is
                                    automatically calculated as described above
@@ -2398,6 +2625,41 @@ end_print
                                    when comparing results from different sets
                                    constructed from the same pool for cross-
                                    validation purposes.
+     --use-non-binders    OPTIONAL [Off] If you would like to include non-
+                                   binding loop data in the equation
+                                   optimization, supplying this flag will cause
+                                   any prediction (for a non-binding loop) less
+                                   than that supplied by --non-bind-thresh to
+                                   be considered wrong and any value above that
+                                   number to be correct.  Non-binding loops
+                                   will not be used to predict the Kd's of any
+                                   loops.  They will only be used to try to
+                                   prevent predictions of non-binding loops to
+                                   be binding loops.  Note that if
+                                   --non-bind-thresh is supplied, this option
+                                   will be turned on automatically.  Not
+                                   compatible with the --refine-solution
+                                   option.
+     -n|--non-bind-thresh OPTIONAL [0] A maximum Kd value is supplied using
+                                   this option to indicate the threshold below
+                                   which predicted Kd's for non-binding loops
+                                   is considered incorrect.  If
+                                   --use-non-binders is supplied, the default
+                                   value of 0 will indicate that this threshold
+                                   will be calculated automatically to be twice
+                                   the maximum Kd supplied in the input file.
+                                   Non-binding loops will not be used to
+                                   predict the Kd's of any loops.  They will
+                                   only be used to try to prevent predictions
+                                   of non-binding loops to be binding loops.
+                                   Note, if you are performing cross-validation
+                                   testing without the -v flag, it is best to
+                                   supply this value explicitly so that it is
+                                   the same for all runs.  Note, if this option
+                                   is supplied without the --use-non-binders,
+                                   it will be turned on automatically.  Not
+                                   compatible with the --refine-solution
+                                   option.
      -v|--cross-validate  OPTIONAL [Off] For each loop in the input file,
                                    calculate the optimized equation based on
                                    the rest of the data, then evaluate whether
