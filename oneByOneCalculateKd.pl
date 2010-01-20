@@ -7,7 +7,7 @@
 #Copyright 2008
 
 #These variables (in main) are used by getVersion() and usage()
-my $software_version_number = '1.1';
+my $software_version_number = '1.3';
 my $created_on_date         = '9/17/2009';
 
 ##
@@ -27,8 +27,13 @@ my $help                = 0;
 my $version             = 0;
 my $overwrite           = 0;
 my $noheader            = 0;
+my $force_nonbinders    = 0;
 my @cps                 = ('AU','UA','GC','CG','GU','UG');
 my @ips                 = ('AG','GA','AC','CA','AA','GG','CC','CU','UC','UU');
+my $accuracy_check_mode = 0;
+my $default_effect_range_add  = 500;
+my $default_effect_range_mult = 15;
+my $equation_type             = 0;
 
 #These variables (in main) are used by the following subroutines:
 #verbose, error, warning, debug, getCommand, quit, and usage
@@ -47,6 +52,8 @@ my $GetOptHash =
 					sglob($_[1]))},
    'c|calculate-kd-file=s' => sub {push(@calc_files,    #REQUIRED
 					sglob($_[1]))},
+   'a|accuracy-check!'     => \$accuracy_check_mode,    #OPTIONAL [Off]
+   'force-nonbind-calcs!'  => \$force_nonbinders,       #OPTIONAL [Off]
    'o|outfile-suffix=s'    => \$outfile_suffix,         #OPTIONAL [undef]
    'force|overwrite'       => \$overwrite,              #OPTIONAL [Off]
    'ignore'                => \$ignore_errors,          #OPTIONAL [Off]
@@ -238,28 +245,6 @@ for(my $i = 0;$i < $largest;$i++)
     my $known_file  = (scalar(@known_files) == 1 ?
 		       $known_files[0] : $known_files[$i]);
 
-    my $calc_kds    = $calc_kd_sets[$i];
-    if(scalar(@$calc_kds) == 0)
-      {
-	error("Unable to calculate file [$calc_file] because nothing could ",
-	      "be parsed from it.");
-	next;
-      }
-
-    my $known_kds = (scalar(@known_kd_sets) == 1 ?
-		     $known_kd_sets[0] : $known_kd_sets[$i]);
-    if(scalar(@$known_kds) == 0)
-      {
-	error("Unable to calculate file [$calc_file] because the associated ",
-	      "known Kd file [$known_file] appeared to either have nothing ",
-	      "in it or it could not be parsed.");
-	next;
-      }
-    $db_size->{scalar(@$known_kds)}->{ERRSUM} = 0
-      unless(exists($db_size->{scalar(@$known_kds)}->{ERRSUM}));
-    $db_size->{scalar(@$known_kds)}->{CNT}    = 0
-      unless(exists($db_size->{scalar(@$known_kds)}->{CNT}));
-
     my $solution = (scalar(@solutions) == 1 ?
 		    $solutions[0] : $solutions[$i]);
     if(scalar(keys(%$solution)) == 0)
@@ -269,6 +254,74 @@ for(my $i = 0;$i < $largest;$i++)
 	      "it or it could not be parsed.");
 	next;
       }
+
+    my $use_nonbinders = exists($solution->{NONBIND}) &&
+      defined($solution->{NONBIND}) && $solution->{NONBIND} ne '';
+
+    #Grab the loops from the input files parsed into the calc_kd_sets array
+    my $calc_kds = $calc_kd_sets[$i];
+    #If the solution says to not use non-binders and the user hasn't specified
+    #forcing nonbinders, extract the non-binders from the calculations
+    if(!$use_nonbinders && !$force_nonbinders)
+      {
+	$calc_kds = [];
+	foreach my $calc_motif (@{$calc_kd_sets[$i]})
+	  {
+	    if(scalar(@{$calc_motif}) < 4 || !defined($calc_motif->[3]) ||
+	       $calc_motif->[3] !~ /^(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/)
+	      {
+		warning("No non-binding threshold is available in solution ",
+			"in factor file: [$factor_file] which means the ",
+			"solution was not trained using non-binding loop ",
+			"data.  Therefor, a Kd cannot be calculated for ",
+			"loop: [",join(',',@$calc_motif),
+			"] in loop file [$calc_file].");
+	      }
+	    else
+	      {push(@$calc_kds,$calc_motif)}
+	  }
+      }
+    if(scalar(@$calc_kds) == 0)
+      {
+	error("Unable to calculate file [$calc_file] because ",
+	      ($force_nonbinders ?
+	       "either it didn't contain any binding loops or " : ''),
+	      "nothing could be parsed from it.");
+	next;
+      }
+
+    #Filter the known kds for only binders regardless of non-binding
+    #calculations because we should never use a bogus Kd (i.e. the nonbinding
+    #threshold) to calculate a real Kd
+    my $known_kds = [grep {$_->[3] =~ /^(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/}
+		     (scalar(@known_kd_sets) == 1 ?
+		      @{$known_kd_sets[0]} : @{$known_kd_sets[$i]})];
+    if(scalar(@$known_kds) == 0)
+      {
+	error("Unable to calculate file [$calc_file] because the associated ",
+	      "known Kd file [$known_file] appeared to either have nothing ",
+	      "in it, contained only non-binding loops, or could not be ",
+	      "parsed.");
+	next;
+      }
+
+    my $max_known_kd = (sort {$b->[3] <=> $a->[3]}
+			grep {$_->[3] !~ /^(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/}
+			@$known_kds)[0];
+
+    my $search_hash = {};
+    foreach my $motif_array (@$known_kds)
+      {
+	my($kcp1,$kip,$kcp2,$known_kd);
+	($kcp1,$kip,$kcp2,$known_kd) = @$motif_array;
+	next if($known_kd eq 'unknown');
+	$search_hash->{"$kcp1$kip$kcp2"} = $known_kd;
+      }
+
+    $db_size->{scalar(@$known_kds)}->{ERRSUM} = 0
+      unless(exists($db_size->{scalar(@$known_kds)}->{ERRSUM}));
+    $db_size->{scalar(@$known_kds)}->{CNT}    = 0
+      unless(exists($db_size->{scalar(@$known_kds)}->{CNT}));
 
     #If an output file name suffix has been defined
     if(defined($outfile_suffix))
@@ -308,15 +361,16 @@ for(my $i = 0;$i < $largest;$i++)
     #particular loop being calculated and the overall standard deviation
 
     my $total_errsum = 0;
-    my $missing_kds  = 0;
+    my $toterrcnt    = 0;
     my $totcnt       = 0;
+    my $real_kd_sum  = 0;
 
     print("EQUATION FACTORS: [",
 	  join('][',
 	       map {my $h = $_;join(',',map {"$_:$h->{$_}"} keys(%$h))}
 	       @{$solution->{VALUES}}),
 	  "]\n");
-    print("TRAINING DB STANDARD DEVIATION: $solution->{STDDEV}\n");
+    print("KD-CUBIC-WEIGHTED STANDARD DEVIATION: $solution->{STDDEV}\n");
     print("EQUATION TYPE: $solution->{TYPE}\n") if(exists($solution->{TYPE}));
     print("EFFECT RANGE: $solution->{EFFECT}\n\n");
 
@@ -326,39 +380,103 @@ for(my $i = 0;$i < $largest;$i++)
 
 	my($ccp1,$cip,$ccp2,$target_kd);
 	($ccp1,$cip,$ccp2,$target_kd) = @$calc_motif;
-	if(!defined($target_kd) || $target_kd eq '')
+	if(!defined($target_kd) ||
+	   $target_kd !~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/)
 	  {
-	    $target_kd   = 0;
-	    $missing_kds = 1;
+	    if(exists($search_hash->{"$ccp1$cip$ccp2"}))
+	      {
+		$target_kd       = $search_hash->{"$ccp1$cip$ccp2"};
+		$calc_motif->[3] = $search_hash->{"$ccp1$cip$ccp2"};
+	      }
+#	    elsif($target_kd ne 'none')
+#	      {$target_kd = 0}
 	  }
 	my $errsum = 0;
 	my $kd_sum = 0;
 	my @kds    = ();
 	my $cnt    = 0;
+	my $errcnt = 0;
 
 	foreach my $motif_array (@$known_kds)
 	  {
 	    my($kcp1,$kip,$kcp2,$known_kd);
 	    ($kcp1,$kip,$kcp2,$known_kd) = @$motif_array;
 
-	    next if($kcp1 eq $ccp1 && $kip eq $cip && $kcp2 eq $ccp2);
+	    if($accuracy_check_mode &&
+	       $kcp1 eq $ccp1 && $kip eq $cip && $kcp2 eq $ccp2)
+	      {next}
+
+	    debug("Calculating Kd for loop: [",join(',',@$calc_motif),
+		  "] using known-Kd loop: [",join(',',@$motif_array),"].");
 
 	    if(!defined($known_kd) || $known_kd eq '')
+	      {next}
+	    #Do not calculate using non-binding loops because we do not want to
+	    #predict a real Kd using a fake Kd
+	    elsif($known_kd !~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/)
 	      {
-		error("The known Kd file [$known_file] was missing a Kd for ",
-		      "loop: [$kcp1,$kip,$kcp2].  Skipping this loop.");
+		debug("Skipping non-binding known-Kd loop: [",
+		      join(',',@$motif_array),"].");
+		if($known_kd ne 'none')
+		  {error("Invalid Kd: [$known_kd] in known Kd file: ",
+			 "[$known_file].")}
 		next;
 	      }
-	    push(@kds,calculateKd($solution,
-				  [$ccp1,$cip,$ccp2],
-				  [$kcp1,$kip,$kcp2],
-				  $known_kd));
-	    $kd_sum += $kds[-1];
-	    $errsum += ($target_kd - $kds[-1])**2 unless($target_kd == 0);
+
+	    my $pred_kd = calculateKd($solution,
+				      [$ccp1,$cip,$ccp2],
+				      [$kcp1,$kip,$kcp2],
+				      $known_kd);
+
+	    my $err = 0;
+	    if($target_kd eq 'none')
+	      {
+		if(($use_nonbinders || $force_nonbinders) &&
+		   exists($solution->{NONBIND}) &&
+		   defined($solution->{NONBIND}) &&
+		   $solution->{NONBIND} =~
+		   /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/)
+		  {
+		    debug("Calculating using non-binding loop.");
+		    $target_kd = $solution->{NONBIND};
+		    if($pred_kd < $solution->{NONBIND})
+		      {$err = $target_kd - $pred_kd}
+		  }
+		elsif($force_nonbinders)
+		  {
+		    $target_kd = $max_known_kd;
+		    if($pred_kd < $max_known_kd)
+		      {$err = $target_kd - $pred_kd}
+		  }
+	      }
+	    elsif($target_kd =~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/ &&
+		  ($kcp1 ne $ccp1 || $kip ne $cip || $kcp2 ne $ccp2))
+	      {
+		debug("Calculating using binding loop.");
+		$err = $target_kd - $pred_kd;
+	      }
+
+	    push(@kds,$pred_kd);
+
+	    $kd_sum += $pred_kd;
 	    $cnt++;
 
+	    #Do not calculate error for non-binding loops or when the Kd is not
+	    #actually known because reporting it makes no sense
+	    #Nor calculate when the loop matches exactly because we want to
+	    #test the accuracy of the prediction, not of the known.
+	    if(($kcp1 ne $ccp1 || $kip ne $cip || $kcp2 ne $ccp2) &&
+	       $target_kd =~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/ &&
+	       $target_kd != 0)
+	      {
+		$errsum += $err**2;
+		$errcnt++;
+	      }
+
 	    print("\t\t\t",sigdec($kds[-1],1),"\t(FROM SEED LOOP: ",
-		  join(',',@$motif_array),")\n");
+		  join(',',@$motif_array),
+		  ($kcp1 eq $ccp1 && $kip eq $cip && $kcp2 eq $ccp2 ?
+		   ' - not used for AVE or STDDEV calc' : ''),")\n");
 	  }
 
 	if(scalar(@kds) == 0)
@@ -370,27 +488,49 @@ for(my $i = 0;$i < $largest;$i++)
 	    next;
 	  }
 
-	$total_errsum += $errsum unless($target_kd == 0);
-	$totcnt += $cnt;
+	my $kd_ave = 0;
+	$kd_ave = $kd_sum / $cnt if($cnt != 0);
 
+	#Do not calculate error for non-binding loops or when the Kd is not
+	#actually known because reporting it makes no sense
 	my $stddev = 0;
-	$stddev = sqrt($errsum / $cnt) unless($target_kd == 0);
-	my $kd_ave = $kd_sum / $cnt;
+	if($target_kd =~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/ &&
+	   $target_kd != 0)
+	  {
+	    $total_errsum += $errsum;
+	    $toterrcnt    += $errcnt;
+	    $stddev = sqrt($errsum / $errcnt) if($errcnt != 0);
+	  }
 
-	print("\n\t\t\tAVE\tKNOWN",
-	      ($target_kd == 0 ? '' : "\tSTDDEV"),"\n");
-	print("\t\t\t",sigdec($kd_ave,1),"\t$calc_motif->[3]",
-	      ($target_kd == 0 ? '' : "\t" . sigdec($stddev,1)),"\n\n");
+	debug("AVE, KNOWN, & STDDEV: ",sigdec($kd_ave,1),
+	      " $target_kd " . sigdec($stddev,1));
+
+	print("\n\t\t\tAVE",
+	      #If we know the Kd, print it and the standard deviation
+	      ($target_kd =~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/ &&
+	       $target_kd != 0 ? "\tKNOWN\tSTDDEV" : ''),"\n");
+	print("\t\t\t",sigdec($kd_ave,1),
+	      #If we know the Kd, print it and the standard deviation
+	      ($target_kd =~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/ &&
+	       $target_kd != 0 ?
+	       "\t$calc_motif->[3]\t" . sigdec($stddev,1) : ''),"\n\n");
+
+	$real_kd_sum +=
+	  ($calc_motif->[3] =~ /(\d+\.?\d*|\d*\.\d+)(e[+\-]?\d+)?$/ &&
+	   $calc_motif->[3] != 0 ? $calc_motif->[3] : $kd_ave);
+	$totcnt++;
       }
 
     my $total_stddev = 0;
-    $total_stddev = sqrt($total_errsum / $totcnt) unless($missing_kds);
+    $total_stddev = sqrt($total_errsum / $toterrcnt) if($toterrcnt);
 
     $db_size->{scalar(@$known_kds)}->{ERRSUM} += $total_errsum;
-    $db_size->{scalar(@$known_kds)}->{CNT}    += $totcnt;
+    $db_size->{scalar(@$known_kds)}->{CNT}    += $toterrcnt;
 
-    print("OVERALL STANDARD DEVIATION: ",sigdec($total_stddev,1),"\n\n")
-      unless($missing_kds);
+    print("OVERALL STANDARD DEVIATION: ",sigdec($total_stddev,1),"\n")
+      if($toterrcnt);
+    print("AVERAGE REAL & PREDICTED KD OF ALL LOOPS: ",($real_kd_sum/$totcnt),
+	  "\n\n") if($totcnt);
 
     #If an output file name suffix is set
     if(defined($outfile_suffix))
@@ -542,6 +682,170 @@ sub getFactorHash
 	  {
 	    if(exists($solution->{STDDEV}))
 	      {
+		warning("Found an extra solution on line [$line_num] in file ",
+			"[$input_file].  Only one solution is allowed per ",
+			"file.  Ignoring Previous solution(s).");
+		$solution = {};
+	      }
+	    $solution->{STDDEV} = $1;
+	  }
+	elsif(/Effect Range: (\S+)/)
+	  {
+	    if(exists($solution->{EFFECT}))
+	      {
+		warning("Found an extra solution on line [$line_num] in file ",
+			"[$input_file].  Only one solution is allowed per ",
+			"file.  Ignoring Previous solution(s).");
+		$solution = {};
+	      }
+	    $solution->{EFFECT} = $1;
+	  }
+	elsif(/Non-binding Threshold: (\S+)/)
+	  {
+	    if(exists($solution->{NONBIND}))
+	      {
+		warning("Found an extra solution on line [$line_num] in file ",
+			"[$input_file].  Only one solution is allowed per ",
+			"file.  Ignoring Previous solution(s).");
+		$solution = {};
+	      }
+	    $solution->{NONBIND} = $1;
+	  }
+	elsif(/Equation Type: (\S+)/)
+	  {
+	    if(exists($solution->{TYPE}))
+	      {
+		warning("Found an extra solution on line [$line_num] in file ",
+			"[$input_file].  Only one solution is allowed per ",
+			"file.  Ignoring Previous solution(s).");
+		$solution = {};
+	      }
+	    $solution->{TYPE} = $1;
+	  }
+	elsif(/^\tPosition \d+:$/)
+	  {
+	    if(defined($solution->{VALUES}) &&
+	       scalar(@{$solution->{VALUES}}) == 3)
+	      {
+		warning("Found an extra loop position on line [$line_num] in ",
+			"file [$input_file].  Only 3 positions are allowed ",
+			"per solution.  Skipping subsequent positions.");
+	      }
+
+	    push(@{$solution->{VALUES}},{});
+	  }
+	elsif(/^\t\t(\S+)\t?(\S*)$/)
+	  {
+	    my $pair   = $1;
+	    my $factor = $2;
+	    $factor = '' unless(defined($factor));
+
+	    if(exists($solution->{VALUES}->[-1]->{$pair}))
+	      {
+		warning("This base pair: [$pair] was found more than once in ",
+			"position [",scalar(@{$solution->{VALUES}}),
+			"] in file: [$input_file].  Keeping this value ",
+			"and ignoring the previous one.");
+	      }
+
+	    $solution->{VALUES}->[-1]->{$pair} = $factor;
+	  }
+	else
+	  {
+	    chomp;
+	    error("Unable to parse line $line_num: [$_].");
+	  }
+      }
+
+    close(INPUT);
+
+    verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
+
+    if(scalar(keys(%$solution)) < 2)
+      {
+	error("Invalid or no solution parsed from file [$input_file].  ",
+	      "Skipping.");
+	return({});
+      }
+
+    if(!exists($solution->{TYPE}))
+      {$solution->{TYPE}    = $equation_type}
+    if(!exists($solution->{EFFECT}))
+      {$solution->{EFFECT}  = ($solution->{TYPE} == 0 ?
+			       $default_effect_range_add :
+			       $default_effect_range_mult)}
+
+    if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+)\%?$/)
+      {warning("Invalid standard deviation found in file [$input_file]: ",
+	       "[$solution->{STDDEV}].")}
+
+    if(scalar(@{$solution->{VALUES}}) < 3)
+      {
+	error("Invalid solution in file [$input_file].  The loop must be at ",
+	      "least 1x1 with 2 closing base pair positions.  Only [",
+	      scalar(@{$solution->{VALUES}}),"] positions were parsed.  ",
+	      "Skipping.");
+	return({});
+      }
+    elsif(scalar(@{$solution->{VALUES}}) > 3)
+      {warning("This script was written to calculate STDDEV's of 1x1 ",
+	       "internal loops, but the solution in file [$input_file] ",
+	       "appears to be for a larger loop.  It may still work, but ",
+	       "this could be a mistake.")}
+
+    my @bad =
+      grep {my $h = $_;
+	    scalar(grep {$_ !~ /^([A-Z]{2}|)$/i ||
+			   $h->{$_} !~ /^(0?\.?\d*|1|)$/} keys(%$h))}
+	@{$solution->{VALUES}};
+    if(scalar(@bad))
+      {
+	warning("Invalid base pairs or factor valuess were in your file ",
+		"[$input_file]: [(",
+		join(')(',
+		     map {my $x=$_;
+			  join('=>',map {"$_=>$x->{$_}"} keys(%$x))} @bad),
+		")].");
+      }
+
+    return($solution);
+  }
+
+sub getFactorHashOld
+  {
+    my $input_file = $_[0];
+    #globals: $effect_range, $equation_type
+
+    #Open the input file
+    if(!open(INPUT,$input_file))
+      {
+	#Report an error and iterate if there was an error
+	error("Unable to open input file: [$input_file].\n$!");
+	next;
+      }
+    else
+      {verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+	       'Opened input file.')}
+
+    my $line_num     = 0;
+    my $verbose_freq = 100;
+    my $solution = {};
+
+    #For each line in the current input file
+    while(getLine(*INPUT))
+      {
+	$line_num++;
+	verboseOverMe('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
+		      "Reading line: [$line_num].") unless($line_num %
+							   $verbose_freq);
+
+	next if(/^\s*#/ || /^\s*$/);
+
+	if(/Solution Standard Deviation: (\S+)$/)
+	  {
+	    if(exists($solution->{STDDEV}))
+	      {
 		error("Found an extra solution on line [$line_num] in file ",
 		      "[$input_file].  Only one solution is allowed per ",
 		      "file.  Skipping other solutions.");
@@ -570,6 +874,17 @@ sub getFactorHash
 		last;
 	      }
 	    $solution->{TYPE} = $1;
+	  }
+	elsif(/Non-binding Threshold: (\S+)/)
+	  {
+	    if(exists($solution->{NONBIND}))
+	      {
+		error("Found an extra solution on line [$line_num] in file ",
+		      "[$input_file].  Only one solution is allowed per ",
+		      "file.  Skipping other solutions.");
+		last;
+	      }
+	    $solution->{NONBIND} = $1;
 	  }
 	elsif(/^\tPosition \d+:$/)
 	  {push(@{$solution->{VALUES}},{})}
@@ -653,128 +968,6 @@ sub getFactorHash
     return($solution);
   }
 
-sub getFactorHashOld
-  {
-    my $input_file = $_[0];
-
-    #Open the input file
-    if(!open(INPUT,$input_file))
-      {
-	#Report an error and iterate if there was an error
-	error("Unable to open input file: [$input_file].\n$!");
-	next;
-      }
-    else
-      {verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
-	       'Opened input file.')}
-
-    my $line_num     = 0;
-    my $verbose_freq = 100;
-    my $solution = {};
-
-    #For each line in the current input file
-    while(getLine(*INPUT))
-      {
-	$line_num++;
-	verboseOverMe('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
-		      "Reading line: [$line_num].") unless($line_num %
-							   $verbose_freq);
-
-	next if(/^\s*#/ || /^\s*$/);
-
-	if(/Solution Standard Deviation: (\S+)$/)
-	  {
-	    if(exists($solution->{STDDEV}))
-	      {
-		error("Found an extra solution on line [$line_num] in file ",
-		      "[$input_file].  Only one solution is allowed per ",
-		      "file.  Skipping other solutions.");
-		last;
-	      }
-	    $solution->{STDDEV} = $1;
-	    $solution->{STDDEV} =~ s/\%$//;
-	  }
-	elsif(/Effect Range: (\S+)/)
-	  {
-	    if(exists($solution->{EFFECT}))
-	      {
-		error("Found an extra solution on line [$line_num] in file ",
-		      "[$input_file].  Only one solution is allowed per ",
-		      "file.  Skipping other solutions.");
-		last;
-	      }
-	    $solution->{EFFECT} = $1;
-	  }
-	elsif(/^\tPosition \d+:$/)
-	  {push(@{$solution->{VALUES}},{})}
-	elsif(/^\t\t(\S+)\t?(\S*)$/)
-	  {
-	    my $pair   = $1;
-	    my $factor = $2;
-	    $factor = '' unless(defined($factor));
-
-	    if(exists($solution->{VALUES}->[-1]->{$pair}))
-	      {
-		error("This base pair: [$pair] was found more than once in ",
-		      "position [",scalar(@{$solution->{VALUES}}),
-		      "] in file: [$input_file].  Keeping the first value ",
-		      "and skipping the extra.");
-		next;
-	      }
-
-	    $solution->{VALUES}->[-1]->{$pair} = $factor;
-	  }
-	else
-	  {
-	    chomp;
-	    error("Unable to parse line $line_num: [$_].");
-	  }
-      }
-
-    close(INPUT);
-
-    verbose('[',($input_file eq '-' ? 'STDIN' : $input_file),'] ',
-	    'Input file done.  Time taken: [',scalar(markTime()),' Seconds].');
-
-    if(scalar(keys(%$solution)) != 3)
-      {
-	error("Invalid or no solution parsed from file [$input_file].  ",
-	      "Skipping.");
-	return({});
-      }
-
-    if($solution->{STDDEV} !~ /^(\d+\.?\d*|\d*\.\d+(e-?\d+)?)$/)
-      {warning("Invalid standard deviation found in file [$input_file]: ",
-	       "[$solution->{STDDEV}].")}
-
-    if(scalar(@{$solution->{VALUES}}) < 3)
-      {
-	error("Invalid solution in file [$input_file].  The loop must be at ",
-	      "least 1x1 with 2 closing base pair positions.  Only [",
-	      scalar(@{$solution->{VALUES}}),"] positions were parsed.  ",
-	      "Skipping.");
-	return({});
-      }
-    elsif(scalar(@{$solution->{VALUES}}) > 3)
-      {warning("This script was written to calculate STDDEV's of 1x1 ",
-	       "internal loops, but the solution in file [$input_file] ",
-	       "appears to be for a larger loop.  It may still work, but ",
-	       "this could be a mistake.")}
-
-    my @bad =
-      grep {my $h = $_;
-	    scalar(grep {$_ !~ /^([A-Z]{2}|)$/i ||
-			   $h->{$_} !~ /^(0?\.?\d*|1|)$/} keys(%$h))}
-	@{$solution->{VALUES}};
-    if(scalar(@bad))
-      {
-	warning("Invalid base pairs or factor valuess were in your file ",
-		"[$input_file]: [",join(',',map {join('=>',(%$_))} @bad),"].");
-      }
-
-    return($solution);
-  }
-
 sub getKds
   {
     my $input_file = $_[0];
@@ -833,6 +1026,14 @@ sub getKds
 	    next;
 	  }
 
+	#Check to see if loop is a non-binder
+	if(defined($kd) && $kd ne '' &&
+	   $kd !~ /^(\d+\.?\d*|\d*\.\d+(e-?\d+)?)\%?$/i)
+	  {$kd = 'none'}
+	elsif(!defined($kd) || $kd !~ /^(\d+\.?\d*|\d*\.\d+(e-?\d+)?)\%?$/i ||
+	      $kd == 0)
+	  {$kd = 'unknown'}
+
 	my $pair_errors = '';
 	if(scalar(grep {$_ eq $cp1} @cps) != 1)
 	  {$pair_errors .= "Bad closing-end base pair: [$cp1].  "}
@@ -879,6 +1080,12 @@ sub calculateKd
     if(!exists($solution->{EFFECT}))
       {
 	error("No effect-range was in the provided solution.");
+	return($kd);
+      }
+    #Do not predict using a non-binding loop
+    elsif($kd eq 'none')
+      {
+	error("Invalid known Kd: [$kd].");
 	return($kd);
       }
 
@@ -955,32 +1162,6 @@ sub calculateKd
     return($kd);
   }
 
-sub calculateKdOld
-  {
-    my $solution        = $_[0]; #{VALUES => [{AT=>##,...},{AA=>##,...},...]}
-    my $calculate_motif = $_[1]; #e.g. ['AT','AA','AT']
-    my $known_motif     = $_[2]; #e.g. ['AT','AA','AT']
-    my $known_kd        = $_[3]; #e.g. 43
-
-    my $kd = $known_kd;
-    foreach my $i (0..$#{$solution->{VALUES}})
-      {
-	debug("Position ",($i+1),
-	      ": $calculate_motif->[$i]_c vs. $known_motif->[$i]_k");
-	$kd += $solution->{EFFECT} *
-	  ((exists($solution->{VALUES}->[$i]->{$calculate_motif->[$i]})  &&
-	    defined($solution->{VALUES}->[$i]->{$calculate_motif->[$i]}) &&
-	    $solution->{VALUES}->[$i]->{$calculate_motif->[$i]} ne '' ?
-	    $solution->{VALUES}->[$i]->{$calculate_motif->[$i]} : 0) -
-	   (exists($solution->{VALUES}->[$i]->{$known_motif->[$i]})  &&
-	    defined($solution->{VALUES}->[$i]->{$known_motif->[$i]}) &&
-	    $solution->{VALUES}->[$i]->{$known_motif->[$i]} ne '' ?
-	    $solution->{VALUES}->[$i]->{$known_motif->[$i]} : 0));
-      }
-
-    return($kd);
-  }
-
 ##
 ## This subroutine prints a description of the script and it's input and output
 ## files.
@@ -1009,11 +1190,11 @@ Buffalo, NY 14203
 rwleach\@ccr.buffalo.edu
 
 * WHAT IS THIS: This script will take a set of factors for an equation that
-                solves Kd rates between a ligand and 1x1 internal RNA loops, the
-                data on which the equation was optimized, and a set of loops on
-                which the data was not optimized and output the various
-                calculated and average calculated Kd for each loop.  It will
-                also output a standard deviation for each set of optimized
+                solves Kd rates between a ligand and 1x1 internal RNA loops,
+                the data on which the equation was optimized, and a set of
+                loops on which the data was not optimized and output the
+                various calculated and average calculated Kd for each loop.  It
+                will also output a standard deviation for each set of optimized
                 factors as well as for each calculated loop.
 
 * FACTOR FILE FORMAT: This is the format output by oneByOneTrnaLigand.pl.  Here
@@ -1123,7 +1304,8 @@ end_print
         print << 'end_print';
 
      -f|--factor-file*    REQUIRED Space-separated file(s inside quotes) of
-                                   factors to plug into the Kd-solving equation.
+                                   factors to plug into the Kd-solving
+                                   equation.
                                    Standard input via redirection is
                                    acceptable.  Perl glob characters (e.g. '*')
                                    are acceptable inside quotes (e.g.
@@ -1142,6 +1324,25 @@ end_print
                                    acceptable inside quotes (e.g. -f "*.txt
                                    *.text").  See --help for a description of
                                    the known kd file format.
+     -a|--accuracy-check  OPTIONAL [Off] With accuracy-check supplied,
+                                   calculations for loops in the training
+                                   database will be skipped.  In other words,
+                                   no predicted Kd's will be output when the Kd
+                                   is known, nor will such predictions be used
+                                   in calculating standard deviation.  Use this
+                                   mode when you are assessing the accuracy of
+                                   the factors.
+     --force-nonbind-     OPTIONAL [Off] This flag will force calculations of
+       calcs                       standard deviation to include non-binding
+                                   loops despite the setting in the factor
+                                   file.  It will use double the maximum Kd of
+                                   the supplied known loops as a reasonable Kd
+                                   limit for the non-binding loop and will
+                                   consider any predicted Kd below that value
+                                   to be wrong and an predicted Kd above that
+                                   value to be right.  There is currently no
+                                   way to set this limit manually other than
+                                   altering the factor file.
      -o|--outfile-suffix  OPTIONAL [nothing] This suffix is added to the input
                                    file names to use as output files.
                                    Redirecting a file into this script will
